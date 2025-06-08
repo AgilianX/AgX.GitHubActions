@@ -1,0 +1,45 @@
+{
+	"folders": [
+		{
+			"path": ".agx/ai-prompts/git/common",
+			"name": "Common AI Prompts"
+		},
+		{
+			"path": "src",
+			"name": "Source Code"
+		},
+		{
+			"path": ".",
+			"name": "Repository"
+		},
+		{
+			"path": "docs",
+			"name": "Documentation"
+		}
+	],
+	"extensions": {
+		"recommendations": [
+			"vscode-icons-team.vscode-icons",
+			"ms-dotnettools.csharp",
+			"ms-dotnettools.csdevkit",
+			"ms-dotnettools.vscode-dotnet-pack",
+			"github.copilot",
+			"github.copilot-chat",
+			"github.vscode-pull-request-github",
+			"ms-vscode.vscode-websearchforcopilot",
+			"ms-vsliveshare.vsliveshare",
+			"coyote-studios.vscode-md-preview-plus",
+			"davidanson.vscode-markdownlint",
+			"josefpihrt-vscode.roslynator",
+		]
+	},
+	"settings": {
+		"powershell.cwd": "Repository",
+		"powershell.enableProfileLoading": true,
+		"github.copilot.chat.codeGeneration.instructions": [
+			{
+				"file": ".github/copilot-instructions.md"
+			}
+		]
+	}
+}
