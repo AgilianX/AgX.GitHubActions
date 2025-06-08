@@ -11,10 +11,11 @@ inputs:
     default: content
     required: true
   package:
+    # can omit if deploying from the workspace root (e.g. downloading a build artifact in an empty new job)
     # directory example: "publish"  (for folder)
     # archive example: "publish.zip" (for zip)
     description: "Path to the publish directory or zip archive."
-    required: true
+    required: false
   site:
     # example: "hexacode-003-site2"
     description: "IIS site name on destination server"
@@ -33,30 +34,103 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - shell: pwsh
+    - name: Analyze path and environment
+      shell: pwsh
       run: |
-        $msdeploy = "C:\Program Files\IIS\Microsoft Web Deploy V3\msdeploy.exe"
-        $inputPath = Join-Path "${{ github.workspace }}" "${{ inputs.package }}"
-        $method = "${{ inputs.method }}".ToLower()
+        $inputPath = Join-Path "${{ github.workspace }}" ${{ inputs.package }}
 
-        Write-Host "🚀 Starting deployment..."
-        Write-Host ("   • Package path: `e[36m$inputPath`e[0m")
+        Write-Host "🔍 Path analysis:"
+        Write-Host "   • Workspace: ${{ github.workspace }}"
+        Write-Host "   • Package input: ${{ inputs.package }}"
+        Write-Host "   • Resolved path: $inputPath"
 
-        if ($method -eq "package") {
-          Write-Host "   • Deployment method: 📦 `e[36mzip package`e[0m"
-          $source = "-source:package='$inputPath'"
-        } elseif ($method -eq "content") {
-          Write-Host "   • Deployment method: 📁 `e[36mdirectory content`e[0m"
-          $source = "-source:contentPath='$inputPath'"
+        Write-Host "📁 Directory content:"
+        Get-ChildItem -Path "${{ github.workspace }}" -Force | Select-Object Name, LastWriteTime, Length | Format-Table -AutoSize
+
+        # Store path for subsequent steps
+        echo "INPUT_PATH=$inputPath" >> $env:GITHUB_ENV
+
+    - name: Determine deployment source
+      shell: pwsh
+      run: |
+        function Get-PackageSource { param ([string]$InputPath)
+            # First check if the specified path exists
+            if (Test-Path -Path $InputPath -PathType Leaf) {
+                Write-Host "   • Package path: `e[36m$InputPath`e[0m"
+                Write-Host "   • Deployment method: 📦 `e[36mzip package`e[0m"
+                return @{
+                    Path = $InputPath
+                    Source = "-source:package='$InputPath'"
+                }
+            } else {
+                # Try to find a zip file if package input doesn't include .zip extension
+                if (-not ${{ inputs.package }}.EndsWith(".zip")) {
+                    $possibleZipPath = Join-Path "${{ github.workspace }}" "${{ inputs.package }}.zip"
+                    if (Test-Path -Path $possibleZipPath -PathType Leaf) {
+                        Write-Host "   • Found zip package: `e[36m$possibleZipPath`e[0m"
+                        Write-Host "   • Deployment method: 📦 `e[36mzip package`e[0m"
+                        return @{
+                            Path = $possibleZipPath
+                            Source = "-source:package='$possibleZipPath'"
+                        }
+                    } else {
+                        Write-Host "❌ `e[31mPackage file not found at paths:`e[0m"
+                        Write-Host "   • $InputPath"
+                        Write-Host "   • $possibleZipPath"
+                        exit 1
+                    }
+                } else {
+                    Write-Host "❌ `e[31mPackage file not found at path:`e[0m $InputPath"
+                    exit 1
+                }
+            }
+        }
+
+        function Get-ContentSource { param ([string]$InputPath)
+            if (Test-Path -Path $InputPath -PathType Container) {
+                Write-Host "   • Content directory: `e[36m$InputPath`e[0m"
+                Write-Host "   • Deployment method: 📁 `e[36mdirectory content`e[0m"
+                return @{
+                    Path = $InputPath
+                    Source = "-source:contentPath='$InputPath'"
+                }
+            } else {
+                Write-Host "❌ `e[31mContent directory not found at path:`e[0m $InputPath"
+                exit 1
+            }
+        }
+
+        Write-Host "🚀 Starting deployment preparation..."
+
+        $inputPath = $env:INPUT_PATH
+        $result = $null
+
+        if ("${{ inputs.method }}" -eq "package") {
+            $result = Get-PackageSource -InputPath $inputPath
+            $inputPath = $result.Path
+            $source = $result.Source
+        } elseif ("${{ inputs.method }}" -eq "content") {
+            $result = Get-ContentSource -InputPath $inputPath
+            $inputPath = $result.Path
+            $source = $result.Source
         } else {
-          Write-Host "❌ `e[31mInvalid method. Use '`e[33mpackage`e[31m' for zip archive or '`e[33mcontent`e[31m' for directory.`e[0m"
-          exit 1
+            Write-Host "❌ `e[31mInvalid method. Use '`e[33mpackage`e[31m' for zip archive or '`e[33mcontent`e[31m' for directory.`e[0m"
+            exit 1
         }
 
         $dest = "-dest:auto,ComputerName=${{ inputs.server }},UserName=${{ inputs.username }},Password=${{ inputs.password }},AuthType=Basic,IncludeAcls='False',MsDeployServiceUrl='https://${{ inputs.server }}/msdeploy.axd?site=${{ inputs.site }}'"
 
+        # Store values for the deployment step
+        echo "SOURCE=$source" >> $env:GITHUB_ENV
+        echo "DEST=$dest" >> $env:GITHUB_ENV
+
+    - name: Execute MSDeploy
+      shell: pwsh
+      run: |
         Write-Host "🔧 Running `e[36mmsdeploy`e[0m..." -ForegroundColor Green
-        & $msdeploy $source $dest `
+        $msdeploy = "C:\Program Files\IIS\Microsoft Web Deploy V3\msdeploy.exe"
+
+        & $msdeploy $env:SOURCE $env:DEST `
           -verb:sync `
           -allowUntrusted `
           -enableRule:AppOffline `
@@ -66,8 +140,10 @@ runs:
           -retryAttempts=10 `
           -retryInterval=2000 `
           -useChecksum
+
         if ($LASTEXITCODE -eq 0) {
           Write-Host "✅ Deployment completed successfully." -ForegroundColor Green
         } else {
           Write-Host "❌ Deployment failed with exit code $LASTEXITCODE." -ForegroundColor Red
+          exit $LASTEXITCODE
         }

@@ -11,6 +11,7 @@ BEFORE DOING ANYTHING:
 - Please inform the user about the workflow type(`workflow: {type}` in the prompt file header) before proceeding
 - For `workflow: git`, first follow these additional preparation instructions:
   [prepare.instructions.md](../.agx/ai-prompts/git/tasks/prepare.instructions.md)
+  Ignore these preparation instructions if the prompt does not containt `workflow: git`.
 
 ## Git
 

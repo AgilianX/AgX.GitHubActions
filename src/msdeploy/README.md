@@ -13,6 +13,13 @@ This reusable GitHub Action deploys a .NET application to IIS using Web Deploy (
 | username | Username for MSDeploy authentication                             | Yes                        |
 | password | Password or token for MSDeploy authentication                    | Yes                        |
 
+## Notes on Artifact Handling
+
+- When using `actions/download-artifact`, the action may extract files directly to the workspace root or to a subdirectory named after the artifact (depending on the version and options used).
+- This action has logic to handle both cases:
+  - For **directory deployment** (`method: content`)th.
+  - For **zip deployment** (`method: package`), if the specified path does not include `.zip` extension, the action will try both the provided path and path with `.zip` appended.
+
 ## Example Usage
 
 ```yaml
@@ -54,12 +61,15 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: ${{ env.PUBLISH_PACKAGE }}
+          path: ${{ env.PUBLISH_PACKAGE }}
+          # if you want to extract to the workspace root(empty in this example)
+          # you can omit this `path` and the `package-path` input in the next step
 
       # For directory deployment:
       - name: Deploy with MSDeploy (folder)
         uses: AgilianX/AgX.GitHubActions/src/msdeploy@master
         with:
-          package: ${{ env.PUBLISH_PACKAGE }}
+          package-path: ${{ env.PUBLISH_PACKAGE }}
           site: ${{ env.MSDEPLOY_SITE }} # msdeploySite in .PublishSettings file
           server: ${{ secrets.MSDEPLOY_SERVER }} # https://{server}/msdeploy.axd?{site}" from .PublishSettings file
           username: ${{ secrets.MSDEPLOY_USER }}
