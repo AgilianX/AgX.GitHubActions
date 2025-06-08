@@ -37,12 +37,15 @@ runs:
     - name: Analyze path and environment
       shell: pwsh
       run: |
-        $inputPath = Join-Path "${{ github.workspace }}" ${{ inputs.package }}
+        if ([string]::IsNullOrWhiteSpace("${{ inputs.package-path }}")) {
+          $inputPath = "${{ github.workspace }}"
+        } else {
+          $inputPath = Join-Path "${{ github.workspace }}" ${{ inputs.package-path }}
+        }
 
         Write-Host "🔍 Path analysis:" -ForegroundColor Cyan
         Write-Host "   • Workspace: `e[36m${{ github.workspace }}`e[0m"
         Write-Host "   • Method: `e[36m${{ inputs.method }}`e[0m"
-        Write-Host "   • Package input: `e[36m${{ inputs.package }}`e[0m"
         Write-Host "   • Resolved path: `e[36m$inputPath`e[0m"
 
         # Store path for subsequent steps
