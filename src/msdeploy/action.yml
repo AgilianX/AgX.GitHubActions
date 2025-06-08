@@ -40,7 +40,7 @@ runs:
         $inputPath = Join-Path "${{ github.workspace }}" ${{ inputs.package }}
 
         Write-Host "🔍 Path analysis:" -ForegroundColor Cyan
-        Write-Host "   • Workspace: `e[36m${{ github.workspace }}`e[0m
+        Write-Host "   • Workspace: `e[36m${{ github.workspace }}`e[0m"
         Write-Host "   • Method: `e[36m${{ inputs.method }}`e[0m"
         Write-Host "   • Package input: `e[36m${{ inputs.package }}`e[0m"
         Write-Host "   • Resolved path: `e[36m$inputPath`e[0m"
@@ -98,7 +98,7 @@ runs:
             }
         }
 
-        Write-Host "🚀 Starting deployment preparation..." -ForegroundColor Cyan
+        Write-Host "🚀 Starting deployment preparation..." -ForegroundColor
 
         $inputPath = $env:INPUT_PATH
         $result = $null
