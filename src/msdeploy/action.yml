@@ -98,7 +98,7 @@ runs:
             }
         }
 
-        Write-Host "🚀 Starting deployment preparation..." -ForegroundColor
+        Write-Host "🚀 Starting deployment preparation..." -ForegroundColor Cyan
 
         $inputPath = $env:INPUT_PATH
         $result = $null
