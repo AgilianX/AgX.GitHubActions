@@ -1,4 +1,4 @@
-name: MSDeploy Deploy
+name: AgX MSDeploy
 description: "Deploy .NET app using Web Deploy (msdeploy.exe)"
 
 inputs:
@@ -10,7 +10,7 @@ inputs:
       - package
     default: content
     required: true
-  package:
+  package-path:
     # can omit if deploying from the workspace root (e.g. downloading a build artifact in an empty new job)
     # directory example: "publish"  (for folder)
     # archive example: "publish.zip" (for zip)
