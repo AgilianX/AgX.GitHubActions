@@ -1,0 +1,73 @@
+name: MSDeploy Deploy
+description: "Deploy .NET app using Web Deploy (msdeploy.exe)"
+
+inputs:
+  method:
+    type: choice
+    description: "Deployment method to use: 'content' (folder) or 'package' (zip archive)"
+    options:
+      - content
+      - package
+    default: package
+    required: true
+  package:
+    # directory example: "publish"  (for folder)
+    # archive example: "publish.zip" (for zip)
+    description: "Path to the publish directory or zip archive."
+    required: true
+  site:
+    # example: "hexacode-003-site2"
+    description: "IIS site name on destination server"
+    required: true
+  server:
+    # example: "win6053.site4now.net:8172"
+    description: "MSDeploy server"
+    required: true
+  username:
+    description: "Username for MSDeploy authentication"
+    required: true
+  password:
+    description: "Password or token for MSDeploy authentication"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - shell: pwsh
+      run: |
+        $msdeploy = "C:\Program Files\IIS\Microsoft Web Deploy V3\msdeploy.exe"
+        $inputPath = Join-Path "${{ github.workspace }}" "${{ inputs.package }}"
+        $method = "${{ inputs.method }}".ToLower()
+
+        Write-Host "🚀 Starting deployment..."
+        Write-Host ("   • Package path: `e[36m$inputPath`e[0m")
+
+        if ($method -eq "package") {
+          Write-Host "   • Deployment method: 📦 `e[36mzip package`e[0m"
+          $source = "-source:package='$inputPath'"
+        } elseif ($method -eq "content") {
+          Write-Host "   • Deployment method: 📁 `e[36mdirectory content`e[0m"
+          $source = "-source:contentPath='$inputPath'"
+        } else {
+          Write-Host "❌ `e[31mInvalid method. Use '`e[33mpackage`e[31m' for zip archive or '`e[33mcontent`e[31m' for directory.`e[0m"
+          exit 1
+        }
+
+        $dest = "-dest:auto,ComputerName=${{ inputs.server }},UserName=${{ inputs.username }},Password=${{ inputs.password }},AuthType=Basic,IncludeAcls='False',MsDeployServiceUrl='https://${{ inputs.server }}/msdeploy.axd?site=${{ inputs.site }}'"
+
+        Write-Host "🔧 Running `e[36mmsdeploy`e[0m..." -ForegroundColor Green
+        & $msdeploy $source $dest `
+          -verb:sync `
+          -allowUntrusted `
+          -enableRule:AppOffline `
+          -disableLink:AppPoolExtension `
+          -disableLink:ContentExtension `
+          -disableLink:CertificateExtension `
+          -retryAttempts=10 `
+          -retryInterval=2000 `
+          -useChecksum
+        if ($LASTEXITCODE -eq 0) {
+          Write-Host "✅ Deployment completed successfully." -ForegroundColor Green
+        } else {
+          Write-Host "❌ Deployment failed with exit code $LASTEXITCODE." -ForegroundColor Red
+        }
