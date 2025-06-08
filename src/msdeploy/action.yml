@@ -30,6 +30,9 @@ inputs:
   password:
     description: "Password or token for MSDeploy authentication"
     required: true
+  msdeploy-args-override:
+    description: "Use different MSDeploy args than the defaults. Excluding source and dest"
+    required: false
 
 runs:
   using: "composite"
@@ -61,7 +64,7 @@ runs:
                 Write-Host "   • Deployment method: 📦 `e[36mzip package`e[0m"
                 return @{
                     Path = $InputPath
-                    Source = "-source:package='$InputPath'"
+                    Source = "package='$InputPath'"
                 }
             } else {
                 # Try to find a zip file if package input doesn't include .zip extension
@@ -72,7 +75,7 @@ runs:
                         Write-Host "   • Deployment method: 📦 `e[36mzip package`e[0m"
                         return @{
                             Path = $possibleZipPath
-                            Source = "-source:package='$possibleZipPath'"
+                            Source = "package='$possibleZipPath'"
                         }
                     } else {
                         Write-Host "❌ `e[31mPackage file not found at paths:`e[0m"
@@ -93,7 +96,7 @@ runs:
                 Write-Host "   • Deployment method: 📁 `e[36mdirectory content`e[0m"
                 return @{
                     Path = $InputPath
-                    Source = "-source:contentPath='$InputPath'"
+                    Source = "contentPath='$InputPath'"
                 }
             } else {
                 Write-Host "❌ `e[31mContent directory not found at path:`e[0m $InputPath"
@@ -119,7 +122,7 @@ runs:
             exit 1
         }
 
-        $dest = "-dest:auto,ComputerName=${{ inputs.server }},UserName=${{ inputs.username }},Password=${{ inputs.password }},AuthType=Basic,IncludeAcls='False',MsDeployServiceUrl='https://${{ inputs.server }}/msdeploy.axd?site=${{ inputs.site }}'"
+        $dest = "contentPath=${{ inputs.site }},computerName=${{ inputs.server }},userName=${{ inputs.username }},password=${{ inputs.password }},authType=Basic,includeAcls='False'"
 
         # Store values for the deployment step
         echo "SOURCE=$source" >> $env:GITHUB_ENV
@@ -131,16 +134,24 @@ runs:
         Write-Host "🔧 Running `e[36mmsdeploy`e[0m..." -ForegroundColor Green
         $msdeploy = "C:\Program Files\IIS\Microsoft Web Deploy V3\msdeploy.exe"
 
-        & $msdeploy $env:SOURCE $env:DEST `
-          -verb:sync `
-          -allowUntrusted `
-          -enableRule:AppOffline `
-          -disableLink:AppPoolExtension `
-          -disableLink:ContentExtension `
-          -disableLink:CertificateExtension `
-          -retryAttempts=10 `
-          -retryInterval=2000 `
-          -useChecksum
+        $override = "${{ inputs.msdeploy-args-override }}"
+        if (-not [string]::IsNullOrWhiteSpace($override)) {
+          Write-Host "⚡ Using provided msdeploy-args-override" -ForegroundColor Cyan
+          $args = $override
+        } else {
+          $args = @(
+            '-verb:sync',
+            '-allowUntrusted',
+            '-enableRule:AppOffline',
+            '-disableLink:AppPoolExtension',
+            '-disableLink:ContentExtension',
+            '-disableLink:CertificateExtension',
+            '-enableRule:AppOffline',
+            '-enableRule:DoNotDeleteRule'
+          )
+        }
+
+        & $msdeploy -source:$env:SOURCE -dest:$env:DEST @args
 
         if ($LASTEXITCODE -eq 0) {
           Write-Host "✅ Deployment completed successfully." -ForegroundColor Green

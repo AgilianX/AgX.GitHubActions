@@ -1,24 +1,26 @@
 # MSDeploy Deploy GitHub Action
 
-This reusable GitHub Action deploys a .NET application to IIS using Web Deploy (msdeploy.exe). It supports deploying either a publish directory (content) or a zip archive (package).
+This reusable GitHub Action deploys a .NET application to IIS using Web Deploy (msdeploy.exe). It supports deploying either a publish directory (content) or a zip archive (package). It also supports advanced scenarios by allowing you to override the msdeploy arguments directly.
 
 ## Inputs
 
-| Name     | Description                                                      | Required                   |
-|----------|------------------------------------------------------------------|----------------------------|
-| method   | Deployment method: `content` (folder) or `package` (zip archive) | No (defaults to `content`) |
-| package  | Path to the publish directory or zip archive                     | Yes                        |
-| site     | IIS site name on destination server                              | Yes                        |
-| server   | MSDeploy server endpoint                                         | Yes                        |
-| username | Username for MSDeploy authentication                             | Yes                        |
-| password | Password or token for MSDeploy authentication                    | Yes                        |
+| Name                  | Description                                                                                 | Required                   |
+|-----------------------|------------------------------------------------------------------------------|----------------------------|
+| method                | Deployment method: `content` (folder) or `package` (zip archive)             | No (defaults to `content`) |
+| package-path          | Path to the publish directory or zip archive                                 | No                         |
+| site                  | IIS site name on destination server                                          | Yes                        |
+| server                | MSDeploy server endpoint (e.g. win6053.site4now.net:8172)                    | Yes                        |
+| username              | Username for MSDeploy authentication                                         | Yes                        |
+| password              | Password or token for MSDeploy authentication                                | Yes                        |
+| msdeploy-args-override| (Advanced) If set, overrides all msdeploy arguments with the provided string | No                         |
 
-## Notes on Artifact Handling
+## Notes on Artifact Handling & Argument Override
 
 - When using `actions/download-artifact`, the action may extract files directly to the workspace root or to a subdirectory named after the artifact (depending on the version and options used).
 - This action has logic to handle both cases:
-  - For **directory deployment** (`method: content`)th.
+  - For **directory deployment** (`method: content`), the path can be a folder or omitted to use the workspace root.
   - For **zip deployment** (`method: package`), if the specified path does not include `.zip` extension, the action will try both the provided path and path with `.zip` appended.
+- If you set `msdeploy-args-override`, the action will use your provided arguments for msdeploy.exe and ignore all other deployment-related inputs except for `-source:` and `-dest:`.
 
 ## Example Usage
 
@@ -80,9 +82,9 @@ jobs:
         uses: AgilianX/AgX.GitHubActions/src/msdeploy@master
         with:
           method: package
-          package: ${{ env.PUBLISH_PACKAGE }}/publish.zip
-          site: ${{ secrets.MSDEPLOY_SITE }} # msdeploySite in .PublishSettings file
-          server: ${{ secrets.MSDEPLOY_SERVER }} # https://{server}/msdeploy.axd?{site}" from .PublishSettings file
+          package-path: ${{ env.PUBLISH_PACKAGE }}/publish.zip
+          site: ${{ secrets.MSDEPLOY_SITE }}
+          server: ${{ secrets.MSDEPLOY_SERVER }}
           username: ${{ secrets.MSDEPLOY_USER }}
           password: ${{ secrets.MSDEPLOY_PASSWORD }}
 
