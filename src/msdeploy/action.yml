@@ -8,7 +8,7 @@ inputs:
     options:
       - content
       - package
-    default: package
+    default: content
     required: true
   package:
     # directory example: "publish"  (for folder)

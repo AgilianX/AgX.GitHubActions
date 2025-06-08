@@ -28,14 +28,18 @@ on:
       default: Staging
       required: true
 
+env:
+  PUBLISH_PACKAGE_SOURCE: './publish' # or ./publish.zip
+  PUBLISH_PACKAGE: 'publish-package'
+
 jobs:
   build:
     # build the solution ...
     - name: Upload artifact for deployment job
       uses: actions/upload-artifact@v4
       with:
-        name: publish-package
-        path: .publish/ # or ./publish.zip
+        name: ${{ env.PUBLISH_PACKAGE }}
+        path: ${{ env.PUBLISH_PACKAGE_SOURCE }}
         retention-days: 1
 
   deploy:
@@ -49,13 +53,13 @@ jobs:
       - name: Download publish artifact
         uses: actions/download-artifact@v4
         with:
-          name: publish-package
+          name: ${{ env.PUBLISH_PACKAGE }}
 
       # For directory deployment:
       - name: Deploy with MSDeploy (folder)
         uses: AgilianX/AgX.GitHubActions/src/msdeploy@master
         with:
-          package: ./publish-package/ # Path to the publish directory
+          package: ${{ env.PUBLISH_PACKAGE }}
           site: ${{ env.MSDEPLOY_SITE }} # msdeploySite in .PublishSettings file
           server: ${{ secrets.MSDEPLOY_SERVER }} # https://{server}/msdeploy.axd?{site}" from .PublishSettings file
           username: ${{ secrets.MSDEPLOY_USER }}
@@ -66,7 +70,7 @@ jobs:
         uses: AgilianX/AgX.GitHubActions/src/msdeploy@master
         with:
           method: package
-          package: ./publish-package/publish.zip
+          package: ${{ env.PUBLISH_PACKAGE }}/publish.zip
           site: ${{ secrets.MSDEPLOY_SITE }} # msdeploySite in .PublishSettings file
           server: ${{ secrets.MSDEPLOY_SERVER }} # https://{server}/msdeploy.axd?{site}" from .PublishSettings file
           username: ${{ secrets.MSDEPLOY_USER }}
