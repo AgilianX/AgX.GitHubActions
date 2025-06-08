@@ -39,13 +39,11 @@ runs:
       run: |
         $inputPath = Join-Path "${{ github.workspace }}" ${{ inputs.package }}
 
-        Write-Host "🔍 Path analysis:"
-        Write-Host "   • Workspace: ${{ github.workspace }}"
-        Write-Host "   • Package input: ${{ inputs.package }}"
-        Write-Host "   • Resolved path: $inputPath"
-
-        Write-Host "📁 Directory content:"
-        Get-ChildItem -Path "${{ github.workspace }}" -Force | Select-Object Name, LastWriteTime, Length | Format-Table -AutoSize
+        Write-Host "🔍 Path analysis:" -ForegroundColor Cyan
+        Write-Host "   • Workspace: `e[36m${{ github.workspace }}`e[0m
+        Write-Host "   • Method: `e[36m${{ inputs.method }}`e[0m"
+        Write-Host "   • Package input: `e[36m${{ inputs.package }}`e[0m"
+        Write-Host "   • Resolved path: `e[36m$inputPath`e[0m"
 
         # Store path for subsequent steps
         echo "INPUT_PATH=$inputPath" >> $env:GITHUB_ENV
@@ -64,7 +62,7 @@ runs:
                 }
             } else {
                 # Try to find a zip file if package input doesn't include .zip extension
-                if (-not ${{ inputs.package }}.EndsWith(".zip")) {
+                if (-not $InputPath.EndsWith(".zip")) {
                     $possibleZipPath = Join-Path "${{ github.workspace }}" "${{ inputs.package }}.zip"
                     if (Test-Path -Path $possibleZipPath -PathType Leaf) {
                         Write-Host "   • Found zip package: `e[36m$possibleZipPath`e[0m"
@@ -100,7 +98,7 @@ runs:
             }
         }
 
-        Write-Host "🚀 Starting deployment preparation..."
+        Write-Host "🚀 Starting deployment preparation..." -ForegroundColor Cyan
 
         $inputPath = $env:INPUT_PATH
         $result = $null
