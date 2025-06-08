@@ -122,7 +122,16 @@ runs:
             exit 1
         }
 
-        $dest = "contentPath=${{ inputs.site }},computerName=${{ inputs.server }},userName=${{ inputs.username }},password=${{ inputs.password }},authtype='Basic',includeAcls='False'"
+        $destArgs = @(
+            'contentPath=${{ inputs.site }}',
+            'computerName=${{ inputs.server }}',
+            'userName=${{ inputs.username }}',
+            'password=${{ inputs.password }}',
+            'authtype="NTLM"',
+            'includeAcls="False"'
+        )
+
+        $dest = $destArgs -join ','
 
         # Store values for the deployment step
         echo "SOURCE=$source" >> $env:GITHUB_ENV
