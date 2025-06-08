@@ -4,3 +4,4 @@
 	track = master
 	useHooks = true
 	useAliases = true
+	initialized = true
