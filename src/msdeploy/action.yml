@@ -69,7 +69,7 @@ runs:
             } else {
                 # Try to find a zip file if package input doesn't include .zip extension
                 if (-not $InputPath.EndsWith(".zip")) {
-                    $possibleZipPath = Join-Path "${{ github.workspace }}" "${{ inputs.package }}.zip"
+                    $possibleZipPath = Join-Path "${{ github.workspace }}" "${{ inputs.package-path }}.zip"
                     if (Test-Path -Path $possibleZipPath -PathType Leaf) {
                         Write-Host "   • Found zip package: `e[36m$possibleZipPath`e[0m"
                         Write-Host "   • Deployment method: 📦 `e[36mzip package`e[0m"

@@ -2,6 +2,16 @@
 
 This reusable GitHub Action deploys a .NET application to IIS using Web Deploy (msdeploy.exe). It supports deploying either a publish directory (content) or a zip archive (package). It also supports advanced scenarios by allowing you to override the msdeploy arguments directly.
 
+## ⚠️ Danger Zone
+
+> [!CAUTION]
+> **Automatic Package Path Detection**: This action has automatic fallback logic that may behave unexpectedly:
+>
+> - When `method: package` is used and the specified `package-path` doesn't exist, the action automatically tries appending `.zip` to the path
+> - Example: If you specify `package-path: "myapp"` but `myapp` doesn't exist, it will try `myapp.zip`
+> - This can lead to unintended deployments if a zip file exists with the fallback name
+> - **Recommendation**: Always specify the exact path including file extension for packages, or implement a confirmation delay
+
 ## Inputs
 
 | Name                  | Description                                                                                 | Required                   |
@@ -72,8 +82,8 @@ jobs:
         uses: AgilianX/AgX.GitHubActions/src/msdeploy@master
         with:
           package-path: ${{ env.PUBLISH_PACKAGE }}
-          site: ${{ env.MSDEPLOY_SITE }} # msdeploySite in .PublishSettings file
-          server: ${{ secrets.MSDEPLOY_SERVER }} # https://{server}/msdeploy.axd?{site}" from .PublishSettings file
+          site: ${{ vars.MSDEPLOY_SITE }} # msdeploySite in .PublishSettings file
+          server: ${{ vars.MSDEPLOY_SERVER }} # https://{server}/msdeploy.axd?{site}" from .PublishSettings file
           username: ${{ secrets.MSDEPLOY_USER }}
           password: ${{ secrets.MSDEPLOY_PASSWORD }}
 
@@ -83,8 +93,8 @@ jobs:
         with:
           method: package
           package-path: ${{ env.PUBLISH_PACKAGE }}/publish.zip
-          site: ${{ secrets.MSDEPLOY_SITE }}
-          server: ${{ secrets.MSDEPLOY_SERVER }}
+          site: ${{ vars.MSDEPLOY_SITE }}
+          server: ${{ vars.MSDEPLOY_SERVER }}
           username: ${{ secrets.MSDEPLOY_USER }}
           password: ${{ secrets.MSDEPLOY_PASSWORD }}
 
