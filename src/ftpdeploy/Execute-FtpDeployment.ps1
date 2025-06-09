@@ -184,7 +184,6 @@ function Get-FtpFilesRecursive {
 Write-Host "🔧 `e[32mStarting FTP deployment...`e[0m"
 
 Write-Host "`n🔍 Input Parameters:"
-Write-Host "   • Server: `e[36m$Server`e[0m"
 Write-Host "   • Port: `e[36m$Port`e[0m"
 Write-Host "   • Remote Path: `e[36m$RemotePath`e[0m"
 Write-Host "   • Passive Mode: `e[36m$PassiveMode`e[0m"
@@ -262,7 +261,15 @@ try {
             $request.UsePassive = $PassiveMode
             $fileContent = [System.IO.File]::ReadAllBytes($currentFile.FullName)
             $request.ContentLength = $fileContent.Length
-            $requestStream = $request.GetRequestStream()
+            try {
+                $requestStream = $request.GetRequestStream()
+            }
+            catch {
+                if (-not ($_.Exception.Message -like '*550*')) {
+                    # File might not exist yet
+                    throw $_  # Re-throw other exceptions
+                }
+            }
             $requestStream.Write($fileContent, 0, $fileContent.Length)
             $requestStream.Close()
             $response = $request.GetResponse()
@@ -271,7 +278,7 @@ try {
         }
         catch {
             Write-Host "❌ `e[31mError uploading file `e[36m$($currentFile.Name)`e[31m:`e[0m $($_.Exception.Message)"
-            Write-Host "❌ `e[31mRemote Pat:`e[36m$remoteFileUri`e[0m"
+            Write-Host "❌ `e[31mRemote Path:`e[36mftp://$remoteFileUri`e[0m"
             Write-Host "❌ `e[31mError details:`e[0m $($_.Exception.GetType().FullName)"
             Write-Host "❌ `e[31mStack trace:`e[0m $($_.ScriptStackTrace)"
             throw
