@@ -208,6 +208,23 @@ runs:
       run: |
         Write-Host "🔧 Starting FTP deployment..." -ForegroundColor Green
 
+        Write-Host "🔍 Environment Variables:" -ForegroundColor Cyan
+        Write-Host "   • DEPLOY_PATH: `e[36m$env:DEPLOY_PATH`e[0m"
+        Write-Host "   • SOURCE_PATH: `e[36m$env:SOURCE_PATH`e[0m"
+        Write-Host "   • SOURCE_TYPE: `e[36m$env:SOURCE_TYPE`e[0m"
+        Write-Host "   • FTP_METHOD: `e[36m$env:FTP_METHOD`e[0m"
+
+        Write-Host "🔍 Input Parameters:" -ForegroundColor Cyan
+        Write-Host "   • Server: `e[36m${{ inputs.server }}`e[0m"
+        Write-Host "   • Port: `e[36m${{ inputs.port }}`e[0m"
+        Write-Host "   • Remote Path: `e[36m${{ inputs.remote-path }}`e[0m"
+        Write-Host "   • Protocol: `e[36m${{ inputs.protocol }}`e[0m"
+        Write-Host "   • Passive Mode: `e[36m${{ inputs.passive-mode }}`e[0m"
+        Write-Host "   • Verify SSL: `e[36m${{ inputs.verify-ssl }}`e[0m"
+        Write-Host "   • Clean Target: `e[36m${{ inputs.clean-target }}`e[0m"
+        Write-Host "   • Exclude Patterns: `e[36m${{ inputs.exclude-patterns }}`e[0m"
+        Write-Host "   • Preserve Patterns: `e[36m${{ inputs.preserve-patterns }}`e[0m"
+
         $deployPath = $env:DEPLOY_PATH
         $server = "${{ inputs.server }}"
         $port = [int]"${{ inputs.port }}"
@@ -220,90 +237,199 @@ runs:
         $excludePatterns = "${{ inputs.exclude-patterns }}"
 
         # Parse exclude patterns
-        $excludeList = @()
-        if (-not [string]::IsNullOrWhiteSpace($excludePatterns)) {
-            $excludeList = $excludePatterns -split ',' | ForEach-Object { $_.Trim() }
-            Write-Host "   • Exclude patterns: `e[36m$($excludeList -join ', ')`e[0m"
-        }
-
-        function Test-ExcludeFile {
-            param([string]$FilePath, [string[]]$Patterns)
-            if ($Patterns.Count -eq 0) { return $false }
-
-            foreach ($pattern in $Patterns) {
-                if ($FilePath -like $pattern) {
-                    return $true
-                }
+        Write-Host "🔄 Processing exclude patterns..."
+        try {
+            $excludeList = @()
+            if (-not [string]::IsNullOrWhiteSpace($excludePatterns)) {
+                $excludeList = $excludePatterns -split ',' | ForEach-Object { $_.Trim() }
+                Write-Host "   • Exclude patterns parsed: `e[36m$($excludeList -join ', ')`e[0m"
+                Write-Host "   • Exclude list count: `e[36m$($excludeList.Count)`e[0m"
+            } else {
+                Write-Host "   • No exclude patterns specified"
             }
-            return $false
+        } catch {
+            Write-Host "❌ Error parsing exclude patterns: $($_.Exception.Message)" -ForegroundColor Red
+            exit 1
         }
+
+        Write-Host "🔄 Defining helper functions..."
+        try {
+            function Test-ExcludeFile {
+                param([string]$FilePath, [string[]]$Patterns)
+                Write-Host "     • Testing file: `e[33m$FilePath`e[0m against $($Patterns.Count) patterns" -ForegroundColor DarkGray
+                if ($Patterns.Count -eq 0) {
+                    Write-Host "     • No patterns to check, file not excluded" -ForegroundColor DarkGray
+                    return $false
+                }
+
+                foreach ($pattern in $Patterns) {
+                    Write-Host "     • Checking pattern: `e[33m$pattern`e[0m" -ForegroundColor DarkGray
+                    if ($FilePath -like $pattern) {
+                        Write-Host "     • ✅ Pattern matched, file will be excluded" -ForegroundColor DarkGray
+                        return $true
+                    }
+                }
+                Write-Host "     • ❌ No patterns matched, file will be included" -ForegroundColor DarkGray
+                return $false
+            }
+            Write-Host "   • Helper function Test-ExcludeFile defined successfully"
+        } catch {
+            Write-Host "❌ Error defining helper functions: $($_.Exception.Message)" -ForegroundColor Red
+            exit 1
+        }
+
+        Write-Host "🔍 Checking FTP method..."
+        Write-Host "   • FTP_METHOD environment variable: `e[36m$env:FTP_METHOD`e[0m"
 
         if ($env:FTP_METHOD -eq "WinSCP") {
             Write-Host "🔧 Using WinSCP for FTP operations..." -ForegroundColor Cyan
 
             try {
+                Write-Host "🔄 Creating WinSCP session options..."
+
                 # Create session options
+                Write-Host "   • Creating SessionOptions object..."
                 $sessionOptions = New-Object WinSCP.SessionOptions -Property @{
                     Protocol = switch ($protocol) {
-                        "ftp" { [WinSCP.Protocol]::Ftp }
-                        "ftps" { [WinSCP.Protocol]::Ftps }
-                        "sftp" { [WinSCP.Protocol]::Sftp }
-                        default { [WinSCP.Protocol]::Ftp }
+                        "ftp" {
+                            Write-Host "   • Protocol set to: `e[36mFTP`e[0m"
+                            [WinSCP.Protocol]::Ftp
+                        }
+                        "ftps" {
+                            Write-Host "   • Protocol set to: `e[36mFTPS`e[0m"
+                            [WinSCP.Protocol]::Ftps
+                        }
+                        "sftp" {
+                            Write-Host "   • Protocol set to: `e[36mSFTP`e[0m"
+                            [WinSCP.Protocol]::Sftp
+                        }
+                        default {
+                            Write-Host "   • Protocol defaulted to: `e[36mFTP`e[0m"
+                            [WinSCP.Protocol]::Ftp
+                        }
                     }
                     HostName = $server
                     PortNumber = $port
                     UserName = $username
                     Password = $password
                 }
+                Write-Host "🔄 SessionOptions object created successfully"
+                Write-Host "   • Hostname: `e[36m$($sessionOptions.HostName)`e[0m"
+                Write-Host "   • Port: `e[36m$($sessionOptions.PortNumber)`e[0m"
+                Write-Host "   • Username: `e[36m$($sessionOptions.UserName)`e[0m"
+                Write-Host "   • Protocol: `e[36m$($sessionOptions.Protocol)`e[0m"
 
                 if ($protocol -eq "ftps") {
+                    Write-Host "🔄 Configuring FTPS settings..."
                     $sessionOptions.FtpSecure = [WinSCP.FtpSecure]::ExplicitSsl
+                    Write-Host "   • FtpSecure set to: `e[36mExplicitSsl`e[0m"
+
                     if (-not $verifySSL) {
                         $sessionOptions.GiveUpSecurityAndAcceptAnySslCertificate = $true
+                        Write-Host "   • SSL certificate verification: `e[33mDisabled`e[0m"
+                    } else {
+                        Write-Host "   • SSL certificate verification: `e[32mEnabled`e[0m"
                     }
                 }
 
                 # Create session and connect
+                Write-Host "🔄 Creating WinSCP session..."
                 $session = New-Object WinSCP.Session
-                $session.Open($sessionOptions)
+                Write-Host "   • WinSCP Session object created"
 
-                Write-Host "   • ✅ Connected to FTP server"
+                Write-Host "🔄 Attempting to open connection..."
+                $session.Open($sessionOptions)
+                Write-Host "   • ✅ Connected to FTP server successfully"
+
+                # Test connection
+                Write-Host "🔄 Testing connection..."
+                $sessionInfo = $session.SessionInfo
+                Write-Host "   • Session protocol name: `e[36m$($sessionInfo.ProtocolName)`e[0m"
+                Write-Host "   • Remote directory: `e[36m$($session.HomePath)`e[0m"
 
                 # Ensure remote directory exists
+                Write-Host "🔄 Verifying remote directory..."
                 if (-not [string]::IsNullOrWhiteSpace($remotePath) -and $remotePath -ne "/") {
                     try {
+                        Write-Host "   • Attempting to create/verify directory: `e[36m$remotePath`e[0m"
                         $session.CreateDirectory($remotePath)
-                        Write-Host "   • Created/verified remote directory: `e[36m$remotePath`e[0m"
+                        Write-Host "   • ✅ Created/verified remote directory: `e[36m$remotePath`e[0m"
                     } catch {
-                        # Only ignore if directory already exists
-                        if ($_.Exception.Message -notlike "*already exists*" -and $_.Exception.Message -notlike "*exist*") {
-                            Write-Host "   • ⚠️  Could not create directory: $($_.Exception.Message)" -ForegroundColor Yellow
+                        Write-Host "   • ⚠️  Directory operation result: $($_.Exception.Message)" -ForegroundColor Yellow
+                        # Check if directory already exists by trying to list it
+                        try {
+                            $dirInfo = $session.ListDirectory($remotePath)
+                            Write-Host "   • ✅ Directory exists and is accessible"
+                        } catch {
+                            Write-Host "   • ❌ Directory creation/verification failed: $($_.Exception.Message)" -ForegroundColor Red
+                            if ($_.Exception.Message -notlike "*already exists*" -and $_.Exception.Message -notlike "*exist*") {
+                                throw
+                            }
                         }
+                    }
+                } else {
+                    Write-Host "   • Using root directory or default path"
                 }
 
+                # Check source directory
+                Write-Host "🔄 Checking source directory..."
+                Write-Host "   • Deploy path: `e[36m$deployPath`e[0m"
+                if (-not (Test-Path -Path $deployPath)) {
+                    Write-Host "   • ❌ Deploy path does not exist!" -ForegroundColor Red
+                    throw "Deploy path not found: $deployPath"
+                }
+
+                $sourceFiles = Get-ChildItem -Path $deployPath -Recurse -File
+                Write-Host "   • Found $($sourceFiles.Count) files to process"
+
                 # Upload files
+                Write-Host "🔄 Starting file upload process..."
                 $uploadCount = 0
                 $skippedCount = 0
 
-                Get-ChildItem -Path $deployPath -Recurse -File | ForEach-Object {
-                    $relativePath = $_.FullName.Substring($deployPath.Length).TrimStart('\', '/')
-                    $relativePath = $relativePath -replace '\\', '/'
-
-                    if (Test-ExcludeFile -FilePath $relativePath -Patterns $excludeList) {
-                        Write-Host "   • ⏭️  Skipped: `e[33m$relativePath`e[0m (excluded)"
-                        $skippedCount++
-                        return
-                    }
-
-                    $remoteFilePath = if ($remotePath -eq "/") { "/$relativePath" } else { "$remotePath/$relativePath" }
-                    $remoteFilePath = $remoteFilePath -replace '/+', '/'
-                    
+                $sourceFiles | ForEach-Object {
                     try {
-                        $session.PutFiles($_.FullName, $remoteFilePath, $false, $null)
+                        $currentFile = $_
+                        Write-Host "🔄 Processing file: `e[36m$($currentFile.Name)`e[0m" -ForegroundColor DarkGray
+
+                        $relativePath = $currentFile.FullName.Substring($deployPath.Length).TrimStart('\', '/')
+                        $relativePath = $relativePath -replace '\\', '/'
+                        Write-Host "   • Relative path: `e[33m$relativePath`e[0m" -ForegroundColor DarkGray
+
+                        if (Test-ExcludeFile -FilePath $relativePath -Patterns $excludeList) {
+                            Write-Host "   • ⏭️  Skipped: `e[33m$relativePath`e[0m (excluded)" -ForegroundColor Yellow
+                            $skippedCount++
+                            return
+                        }
+
+                        $remoteFilePath = if ($remotePath -eq "/" -or [string]::IsNullOrWhiteSpace($remotePath)) {
+                            "/$relativePath"
+                        } else {
+                            "$remotePath/$relativePath"
+                        }
+                        $remoteFilePath = $remoteFilePath -replace '/+', '/'
+                        Write-Host "   • Remote file path: `e[33m$remoteFilePath`e[0m" -ForegroundColor DarkGray
+
+                        # Ensure remote directory exists for this file
+                        $remoteDir = Split-Path $remoteFilePath -Parent
+                        if ($remoteDir -and $remoteDir -ne "/" -and $remoteDir -ne "") {
+                            try {
+                                Write-Host "   • Ensuring remote directory exists: `e[33m$remoteDir`e[0m" -ForegroundColor DarkGray
+                                $session.CreateDirectory($remoteDir)
+                            } catch {
+                                # Ignore if directory already exists
+                                Write-Host "   • Directory operation: $($_.Exception.Message)" -ForegroundColor DarkGray
+                            }
+                        }
+
+                        Write-Host "   • Uploading: `e[32m$($currentFile.FullName)`e[0m → `e[32m$remoteFilePath`e[0m" -ForegroundColor Green
+                        $session.PutFiles($currentFile.FullName, $remoteFilePath, $false, $null)
                         Write-Host "   • ✅ Uploaded: `e[32m$relativePath`e[0m"
                         $uploadCount++
                     } catch {
-                        Write-Host "   • ❌ Failed to upload `e[31m$relativePath`e[0m: $($_.Exception.Message)"
+                        Write-Host "❌ Error uploading file $($currentFile.Name): $($_.Exception.Message)" -ForegroundColor Red
+                        Write-Host "❌ Error details: $($_.Exception.GetType().FullName)" -ForegroundColor Red
+                        Write-Host "❌ Stack trace: $($_.ScriptStackTrace)" -ForegroundColor Red
                         throw
                     }
                 }
@@ -347,7 +473,7 @@ runs:
 
                         # Get list of existing files on server
                         $remoteDirectory = if ([string]::IsNullOrWhiteSpace($remotePath) -or $remotePath -eq "/") { "/" } else { $remotePath }
-                        $script:existingFiles = @()
+                        $existingFiles = @()
 
                         function Get-RemoteFiles {
                             param([string]$Directory, [string]$BasePath = "")
@@ -421,11 +547,14 @@ runs:
                 if ($cleanupCount -gt 0) {
                     Write-Host "   • Files cleaned up: `e[31m$cleanupCount`e[0m"
                 }
-
             } catch {
                 Write-Host "❌ FTP deployment failed: $($_.Exception.Message)" -ForegroundColor Red
-                if ($session -and $session.Opened) { 
-                    $session.Dispose() 
+                Write-Host "❌ Error type: $($_.Exception.GetType().FullName)" -ForegroundColor Red
+                Write-Host "❌ Stack trace: $($_.ScriptStackTrace)" -ForegroundColor Red
+                Write-Host "❌ Inner exception: $($_.Exception.InnerException.Message)" -ForegroundColor Red
+                if ($session -and $session.Opened) {
+                    Write-Host "🔄 Disposing WinSCP session..." -ForegroundColor Yellow
+                    $session.Dispose()
                 }
                 exit 1
             }
@@ -433,51 +562,82 @@ runs:
             Write-Host "🔧 Using native .NET FTP client..." -ForegroundColor Cyan
             Write-Host "⚠️  Note: Native client has limited protocol support (FTP only)" -ForegroundColor Yellow
 
+            Write-Host "🔄 Validating protocol for native client..."
             if ($protocol -ne "ftp") {
                 Write-Host "❌ Native .NET client only supports FTP protocol. Please install WinSCP module for FTPS/SFTP support." -ForegroundColor Red
+                Write-Host "   • Current protocol: `e[36m$protocol`e[0m" -ForegroundColor Red
                 exit 1
             }
 
             try {
+                Write-Host "🔄 Setting up native .NET FTP connection..."
+
                 # Simple FTP upload using .NET FtpWebRequest
                 $encodedPath = [System.Uri]::EscapeUriString($remotePath)
                 $ftpUri = "ftp://${server}:${port}${encodedPath}"
                 Write-Host "   • Connecting to: `e[36m$ftpUri`e[0m"
+                Write-Host "   • Encoded remote path: `e[36m$encodedPath`e[0m"
+
+                # Check source directory
+                Write-Host "🔄 Checking source directory..."
+                Write-Host "   • Deploy path: `e[36m$deployPath`e[0m"
+                if (-not (Test-Path -Path $deployPath)) {
+                    Write-Host "   • ❌ Deploy path does not exist!" -ForegroundColor Red
+                    throw "Deploy path not found: $deployPath"
+                }
+
+                $sourceFiles = Get-ChildItem -Path $deployPath -Recurse -File
+                Write-Host "   • Found $($sourceFiles.Count) files to process"
 
                 $uploadCount = 0
                 $skippedCount = 0
 
-                Get-ChildItem -Path $deployPath -Recurse -File | ForEach-Object {
-                    $relativePath = $_.FullName.Substring($deployPath.Length).TrimStart('\', '/')
-                    $relativePath = $relativePath -replace '\\', '/'
-
-                    if (Test-ExcludeFile -FilePath $relativePath -Patterns $excludeList) {
-                        Write-Host "   • ⏭️  Skipped: `e[33m$relativePath`e[0m (excluded)"
-                        $skippedCount++
-                        return
-                    }
-
-                    $remoteFileUri = "$ftpUri/$relativePath" -replace '/+', '/'
-
+                $sourceFiles | ForEach-Object {
                     try {
+                        $currentFile = $_
+                        Write-Host "🔄 Processing file: `e[36m$($currentFile.Name)`e[0m" -ForegroundColor DarkGray
+
+                        $relativePath = $currentFile.FullName.Substring($deployPath.Length).TrimStart('\', '/')
+                        $relativePath = $relativePath -replace '\\', '/'
+                        Write-Host "   • Relative path: `e[33m$relativePath`e[0m" -ForegroundColor DarkGray
+
+                        if (Test-ExcludeFile -FilePath $relativePath -Patterns $excludeList) {
+                            Write-Host "   • ⏭️  Skipped: `e[33m$relativePath`e[0m (excluded)" -ForegroundColor Yellow
+                            $skippedCount++
+                            return
+                        }
+
+                        $remoteFileUri = "$ftpUri/$relativePath" -replace '/+', '/'
+                        Write-Host "   • Remote URI: `e[33m$remoteFileUri`e[0m" -ForegroundColor DarkGray
+
+                        Write-Host "   • Creating FTP request..." -ForegroundColor DarkGray
                         $request = [System.Net.FtpWebRequest]::Create($remoteFileUri)
                         $request.Method = [System.Net.WebRequestMethods+Ftp]::UploadFile
                         $request.Credentials = New-Object System.Net.NetworkCredential($username, $password)
                         $request.UsePassive = $passiveMode
+                        Write-Host "   • FTP request configured (Method: UploadFile, UsePassive: $passiveMode)" -ForegroundColor DarkGray
 
-                        $fileContent = [System.IO.File]::ReadAllBytes($_.FullName)
+                        Write-Host "   • Reading file content..." -ForegroundColor DarkGray
+                        $fileContent = [System.IO.File]::ReadAllBytes($currentFile.FullName)
                         $request.ContentLength = $fileContent.Length
+                        Write-Host "   • File size: `e[33m$($fileContent.Length) bytes`e[0m" -ForegroundColor DarkGray
 
+                        Write-Host "   • Uploading file content..." -ForegroundColor DarkGray
                         $requestStream = $request.GetRequestStream()
                         $requestStream.Write($fileContent, 0, $fileContent.Length)
                         $requestStream.Close()
 
+                        Write-Host "   • Getting response..." -ForegroundColor DarkGray
                         $response = $request.GetResponse()
-                        $response.Close()                        
+                        Write-Host "   • Response status: `e[33m$($response.StatusDescription)`e[0m" -ForegroundColor DarkGray
+                        $response.Close()
                         Write-Host "   • ✅ Uploaded: `e[32m$relativePath`e[0m"
                         $uploadCount++
+
                     } catch {
-                        Write-Host "   • ❌ Failed to upload `e[31m$relativePath`e[0m: $($_.Exception.Message)"
+                        Write-Host "❌ Error uploading file $($currentFile.Name): $($_.Exception.Message)" -ForegroundColor Red
+                        Write-Host "❌ Error details: $($_.Exception.GetType().FullName)" -ForegroundColor Red
+                        Write-Host "❌ Stack trace: $($_.ScriptStackTrace)" -ForegroundColor Red
                         throw
                     }
                 }
@@ -607,9 +767,11 @@ runs:
                 if ($cleanupCount -gt 0) {
                     Write-Host "   • Files cleaned up: `e[31m$cleanupCount`e[0m"
                 }
-
             } catch {
                 Write-Host "❌ FTP deployment failed: $($_.Exception.Message)" -ForegroundColor Red
+                Write-Host "❌ Error type: $($_.Exception.GetType().FullName)" -ForegroundColor Red
+                Write-Host "❌ Stack trace: $($_.ScriptStackTrace)" -ForegroundColor Red
+                Write-Host "❌ Inner exception: $($_.Exception.InnerException.Message)" -ForegroundColor Red
                 exit 1
             }
         }
