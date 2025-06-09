@@ -74,7 +74,7 @@ function New-FtpDirectory {
     )
 
     try {
-        $request = [System.Net.FtpWebRequest]::Create($DirectoryUri)
+        $request = [System.Net.FtpWebRequest]::Create("ftp://$DirectoryUri")
         $request.Method = [System.Net.WebRequestMethods+Ftp]::MakeDirectory
         $request.Credentials = $Credentials
         $request.UsePassive = $UsePassive
@@ -101,7 +101,7 @@ function Get-FtpDirectoryListing {
     )
 
     try {
-        $listRequest = [System.Net.FtpWebRequest]::Create($FtpUri)
+        $listRequest = [System.Net.FtpWebRequest]::Create("ftp://$FtpUri")
         $listRequest.Method = [System.Net.WebRequestMethods+Ftp]::ListDirectoryDetails
         $listRequest.Credentials = $Credentials
         $listRequest.UsePassive = $UsePassive
@@ -116,7 +116,7 @@ function Get-FtpDirectoryListing {
         return $directoryListing
     }
     catch {
-        Write-Host "   • ⚠️  Could not list directory `e[33m$FtpUri`e[0m: $($_.Exception.Message)"
+        Write-Host "   • ⚠️  Could not list directory `e[33mftp://$FtpUri`e[0m: $($_.Exception.Message)"
         return $null
     }
 }
@@ -214,9 +214,9 @@ try {
     else {
         $encodedPath = '/' + [System.Uri]::EscapeUriString($normalizedPath)
     }
-    $ftpUri = "ftp://${Server}:${Port}${encodedPath}"
+    $ftpUri = "${Server}:${Port}${encodedPath}"
     Write-Host "   • [CI] Source: `e[36m$DeployPath`e[0m"
-    Write-Host "   • [HOST] Destination: `e[36m$ftpUri`e[0m"
+    Write-Host "   • [HOST] Destination: `e[36mftp://$ftpUri`e[0m"
     if (-not (Test-Path -Path $DeployPath)) {
         Write-Host "   • ❌ `e[31mDeploy path does not exist!`e[0m"
         throw "Deploy path not found: $DeployPath"
@@ -256,7 +256,7 @@ try {
             }
 
             $remoteFileUri = "$ftpUri/$relativePath" -replace '/+', '/'
-            $request = [System.Net.FtpWebRequest]::Create($remoteFileUri)
+            $request = [System.Net.FtpWebRequest]::Create("ftp://$remoteFileUri")
             $request.Method = [System.Net.WebRequestMethods+Ftp]::UploadFile
             $request.Credentials = $credentials
             $request.UsePassive = $PassiveMode
@@ -326,7 +326,7 @@ try {
                         $deleteUri = "$ftpUri/$fileToDelete" -replace '/+', '/'
 
                         try {
-                            $deleteRequest = [System.Net.FtpWebRequest]::Create($deleteUri)
+                            $deleteRequest = [System.Net.FtpWebRequest]::Create("ftp://$deleteUri")
                             $deleteRequest.Method = [System.Net.WebRequestMethods+Ftp]::DeleteFile
                             $deleteRequest.Credentials = $credentials
                             $deleteRequest.UsePassive = $PassiveMode
@@ -364,7 +364,7 @@ try {
                         $deleteUri = "$ftpUri/$dirToDelete" -replace '/+', '/'
 
                         try {
-                            $deleteRequest = [System.Net.FtpWebRequest]::Create($deleteUri)
+                            $deleteRequest = [System.Net.FtpWebRequest]::Create("ftp://$deleteUri")
                             $deleteRequest.Method = [System.Net.WebRequestMethods+Ftp]::RemoveDirectory
                             $deleteRequest.Credentials = $credentials
                             $deleteRequest.UsePassive = $PassiveMode
