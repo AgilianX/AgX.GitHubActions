@@ -1,0 +1,611 @@
+name: AgX FTP Deploy
+description: "Deploy files using FTP/FTPS protocol"
+
+inputs:
+  method:
+    type: choice
+    description: "Deployment method to use: 'content' (folder) or 'package' (zip archive)"
+    options:
+      - content
+      - package
+    default: content
+    required: true
+  package-path:
+    # can omit if deploying from the workspace root (e.g. downloading a build artifact in an empty job)
+    # directory example: "publish"  (for folder)
+    # archive example: "publish.zip" (for zip)
+    description: "Path to the publish directory or zip archive."
+    required: false
+  server:
+    # example: "ftp.mysite.com" or "ftps://ftp.mysite.com"
+    description: "FTP server hostname or URL"
+    required: true
+  port:
+    description: "FTP server port (default: 21 for FTP, 990 for FTPS)"
+    required: false
+    default: "21"
+  username:
+    description: "Username for FTP authentication"
+    required: true
+  password:
+    description: "Password for FTP authentication"
+    required: true
+  remote-path:
+    description: "Remote directory path on FTP server (e.g., '/', '/wwwroot')"
+    required: false
+    default: "/"
+  protocol:
+    type: choice
+    description: "FTP protocol to use - defaults to FTP if not specified"
+    options:
+      - ftp
+      - ftps
+      - sftp
+    default: ftp
+    required: false
+  passive-mode:
+    type: boolean
+    description: "Use passive mode for FTP connections"
+    default: true
+    required: false
+  exclude-patterns:
+    description: "File patterns to exclude from upload (comma-separated, e.g., '*.log,temp/*')"
+    required: false
+  verify-ssl:
+    type: boolean
+    description: "Verify SSL certificates for FTPS connections"
+    default: true
+    required: false
+  clean-target:
+    type: boolean
+    description: "Clean up old files on the server that are not part of the new deployment"
+    default: false
+    required: false
+  preserve-patterns:
+    description: "File patterns to preserve during cleanup (comma-separated, e.g., '*.db,logs/*,config.json')"
+    required: false
+
+runs:
+  using: "composite"
+  steps:
+    - name: Analyze path and environment
+      shell: pwsh
+      run: |
+        if ([string]::IsNullOrWhiteSpace("${{ inputs.package-path }}")) {
+          $inputPath = "${{ github.workspace }}"
+        } else {
+          $inputPath = Join-Path "${{ github.workspace }}" ${{ inputs.package-path }}
+        }
+
+        Write-Host "🔍 Path analysis:" -ForegroundColor Cyan
+        Write-Host "   • Workspace: `e[36m${{ github.workspace }}`e[0m"
+        Write-Host "   • Method: `e[36m${{ inputs.method }}`e[0m"
+        Write-Host "   • Protocol: `e[36m${{ inputs.protocol }}`e[0m"
+        Write-Host "   • Server: `e[36m${{ inputs.server }}`e[0m"
+        Write-Host "   • Port: `e[36m${{ inputs.port }}`e[0m"
+        Write-Host "   • Remote path: `e[36m${{ inputs.remote-path }}`e[0m"
+        Write-Host "   • Resolved path: `e[36m$inputPath`e[0m"
+
+        # Store path for subsequent steps
+        echo "INPUT_PATH=$inputPath" >> $env:GITHUB_ENV
+
+    - name: Determine deployment source
+      shell: pwsh
+      run: |
+        function Get-PackageSource { param ([string]$InputPath)
+            # First check if the specified path exists
+            if (Test-Path -Path $InputPath -PathType Leaf) {
+                Write-Host "   • Package path: `e[36m$InputPath`e[0m"
+                Write-Host "   • Deployment method: 📦 `e[36mzip package`e[0m"
+                return @{
+                    Path = $InputPath
+                    Type = "package"
+                }
+            } else {
+                # Try to find a zip file if package input doesn't include .zip extension
+                if (-not $InputPath.EndsWith(".zip")) {
+                    $possibleZipPath = Join-Path "${{ github.workspace }}" "${{ inputs.package-path }}.zip"
+                    if (Test-Path -Path $possibleZipPath -PathType Leaf) {
+                        Write-Host "   • Found zip package: `e[36m$possibleZipPath`e[0m"
+                        Write-Host "   • Deployment method: 📦 `e[36mzip package`e[0m"
+                        return @{
+                            Path = $possibleZipPath
+                            Type = "package"
+                        }
+                    } else {
+                        Write-Host "❌ `e[31mPackage file not found at paths:`e[0m"
+                        Write-Host "   • $InputPath"
+                        Write-Host "   • $possibleZipPath"
+                        exit 1
+                    }
+                } else {
+                    Write-Host "❌ `e[31mPackage file not found at path:`e[0m $InputPath"
+                    exit 1
+                }
+            }
+        }
+
+        function Get-ContentSource { param ([string]$InputPath)
+            if (Test-Path -Path $InputPath -PathType Container) {
+                Write-Host "   • Content directory: `e[36m$InputPath`e[0m"
+                Write-Host "   • Deployment method: 📁 `e[36mdirectory content`e[0m"
+                return @{
+                    Path = $InputPath
+                    Type = "content"
+                }
+            } else {
+                Write-Host "❌ `e[31mContent directory not found at path:`e[0m $InputPath"
+                exit 1
+            }
+        }
+
+        Write-Host "🚀 Starting deployment preparation..." -ForegroundColor Cyan
+
+        $inputPath = $env:INPUT_PATH
+        $result = $null
+
+        if ("${{ inputs.method }}" -eq "package") {
+            $result = Get-PackageSource -InputPath $inputPath
+        } elseif ("${{ inputs.method }}" -eq "content") {
+            $result = Get-ContentSource -InputPath $inputPath
+        } else {
+            Write-Host "❌ `e[31mInvalid method. Use '`e[33mpackage`e[31m' for zip archive or '`e[33mcontent`e[31m' for directory.`e[0m"
+            exit 1
+        }
+
+        # Store values for the deployment step
+        echo "SOURCE_PATH=$($result.Path)" >> $env:GITHUB_ENV
+        echo "SOURCE_TYPE=$($result.Type)" >> $env:GITHUB_ENV
+
+    - name: Extract package if needed
+      shell: pwsh
+      run: |
+        if ($env:SOURCE_TYPE -eq "package") {
+            Write-Host "📦 Extracting package for FTP upload..." -ForegroundColor Cyan
+            $extractPath = Join-Path $env:TEMP "ftp-extract-$(Get-Date -Format 'yyyyMMddHHmmss')"
+            New-Item -ItemType Directory -Path $extractPath -Force | Out-Null
+
+            try {
+                Expand-Archive -Path $env:SOURCE_PATH -DestinationPath $extractPath -Force
+                Write-Host "   • Extracted to: `e[36m$extractPath`e[0m"
+                echo "DEPLOY_PATH=$extractPath" >> $env:GITHUB_ENV
+            } catch {
+                Write-Host "❌ `e[31mFailed to extract package:`e[0m $($_.Exception.Message)"
+                exit 1
+            }
+        } else {
+            echo "DEPLOY_PATH=$env:SOURCE_PATH" >> $env:GITHUB_ENV
+        }
+
+    - name: Install required PowerShell modules
+      shell: pwsh
+      run: |
+        Write-Host "📥 Installing FTP PowerShell modules..." -ForegroundColor Cyan
+
+        # Check if running in a constrained environment
+        $policy = Get-ExecutionPolicy
+        if ($policy -eq "Restricted") {
+            Write-Host "⚠️  Setting execution policy for current process..." -ForegroundColor Yellow
+            Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process -Force
+        }
+
+        try {
+            # Try to install/import WinSCP module for better FTP support
+            if (-not (Get-Module -ListAvailable -Name "WinSCP" -ErrorAction SilentlyContinue)) {
+                Write-Host "   • Installing WinSCP PowerShell module..."
+                Install-Module -Name WinSCP -Force -Scope CurrentUser -Repository PSGallery
+            }
+            Import-Module WinSCP -Force
+            Write-Host "   • ✅ WinSCP module loaded successfully"
+            echo "FTP_METHOD=WinSCP" >> $env:GITHUB_ENV
+        } catch {
+            Write-Host "   • ⚠️  WinSCP module not available, using native .NET FTP client"
+            echo "FTP_METHOD=Native" >> $env:GITHUB_ENV
+        }
+
+    - name: Execute FTP deployment
+      shell: pwsh
+      run: |
+        Write-Host "🔧 Starting FTP deployment..." -ForegroundColor Green
+
+        $deployPath = $env:DEPLOY_PATH
+        $server = "${{ inputs.server }}"
+        $port = [int]"${{ inputs.port }}"
+        $username = "${{ inputs.username }}"
+        $password = "${{ inputs.password }}"
+        $remotePath = "${{ inputs.remote-path }}"
+        $protocol = "${{ inputs.protocol }}"
+        $passiveMode = [bool]"${{ inputs.passive-mode }}"
+        $verifySSL = [bool]"${{ inputs.verify-ssl }}"
+        $excludePatterns = "${{ inputs.exclude-patterns }}"
+
+        # Parse exclude patterns
+        $excludeList = @()
+        if (-not [string]::IsNullOrWhiteSpace($excludePatterns)) {
+            $excludeList = $excludePatterns -split ',' | ForEach-Object { $_.Trim() }
+            Write-Host "   • Exclude patterns: `e[36m$($excludeList -join ', ')`e[0m"
+        }
+
+        function Test-ExcludeFile {
+            param([string]$FilePath, [string[]]$Patterns)
+            if ($Patterns.Count -eq 0) { return $false }
+
+            foreach ($pattern in $Patterns) {
+                if ($FilePath -like $pattern) {
+                    return $true
+                }
+            }
+            return $false
+        }
+
+        if ($env:FTP_METHOD -eq "WinSCP") {
+            Write-Host "🔧 Using WinSCP for FTP operations..." -ForegroundColor Cyan
+
+            try {
+                # Create session options
+                $sessionOptions = New-Object WinSCP.SessionOptions -Property @{
+                    Protocol = switch ($protocol) {
+                        "ftp" { [WinSCP.Protocol]::Ftp }
+                        "ftps" { [WinSCP.Protocol]::Ftps }
+                        "sftp" { [WinSCP.Protocol]::Sftp }
+                        default { [WinSCP.Protocol]::Ftp }
+                    }
+                    HostName = $server
+                    PortNumber = $port
+                    UserName = $username
+                    Password = $password
+                }
+
+                if ($protocol -eq "ftps") {
+                    $sessionOptions.FtpSecure = [WinSCP.FtpSecure]::ExplicitSsl
+                    if (-not $verifySSL) {
+                        $sessionOptions.GiveUpSecurityAndAcceptAnySslCertificate = $true
+                    }
+                }
+
+                # Create session and connect
+                $session = New-Object WinSCP.Session
+                $session.Open($sessionOptions)
+
+                Write-Host "   • ✅ Connected to FTP server"
+
+                # Ensure remote directory exists
+                if (-not [string]::IsNullOrWhiteSpace($remotePath) -and $remotePath -ne "/") {
+                    try {
+                        $session.CreateDirectory($remotePath)
+                        Write-Host "   • Created/verified remote directory: `e[36m$remotePath`e[0m"
+                    } catch {
+                        # Directory might already exist, that's OK
+                    }
+                }
+
+                # Upload files
+                $uploadCount = 0
+                $skippedCount = 0
+
+                Get-ChildItem -Path $deployPath -Recurse -File | ForEach-Object {
+                    $relativePath = $_.FullName.Substring($deployPath.Length).TrimStart('\', '/')
+                    $relativePath = $relativePath -replace '\\', '/'
+
+                    if (Test-ExcludeFile -FilePath $relativePath -Patterns $excludeList) {
+                        Write-Host "   • ⏭️  Skipped: `e[33m$relativePath`e[0m (excluded)"
+                        $skippedCount++
+                        return
+                    }
+
+                    $remoteFilePath = if ($remotePath -eq "/") { "/$relativePath" } else { "$remotePath/$relativePath" }
+                    $remoteFilePath = $remoteFilePath -replace '/+', '/'                    try {
+                        $session.PutFiles($_.FullName, $remoteFilePath, $false, $null)
+                        Write-Host "   • ✅ Uploaded: `e[32m$relativePath`e[0m"
+                        $uploadCount++
+                    } catch {
+                        Write-Host "   • ❌ Failed to upload `e[31m$relativePath`e[0m: $($_.Exception.Message)"
+                        throw
+                    }
+                }
+
+                # Cleanup old files if requested
+                $cleanupCount = 0
+                if ([bool]"${{ inputs.clean-target }}") {
+                    Write-Host "🧹 Starting cleanup of old files..." -ForegroundColor Cyan
+
+                    # Parse preserve patterns
+                    $preservePatterns = "${{ inputs.preserve-patterns }}"
+                    $preserveList = @()
+                    if (-not [string]::IsNullOrWhiteSpace($preservePatterns)) {
+                        $preserveList = $preservePatterns -split ',' | ForEach-Object { $_.Trim() }
+                        Write-Host "   • Preserve patterns: `e[36m$($preserveList -join ', ')`e[0m"
+                    }
+
+                    function Test-PreserveFile {
+                        param([string]$FilePath, [string[]]$Patterns)
+                        if ($Patterns.Count -eq 0) { return $false }
+
+                        foreach ($pattern in $Patterns) {
+                            if ($FilePath -like $pattern) {
+                                return $true
+                            }
+                        }
+                        return $false
+                    }
+
+                    try {
+                        # Get list of uploaded files (our new deployment)
+                        $uploadedFiles = @()
+                        Get-ChildItem -Path $deployPath -Recurse -File | ForEach-Object {
+                            $relativePath = $_.FullName.Substring($deployPath.Length).TrimStart('\', '/')
+                            $relativePath = $relativePath -replace '\\', '/'
+
+                            if (-not (Test-ExcludeFile -FilePath $relativePath -Patterns $excludeList)) {
+                                $uploadedFiles += $relativePath
+                            }
+                        }
+
+                        # Get list of existing files on server
+                        $remoteDirectory = if ([string]::IsNullOrWhiteSpace($remotePath) -or $remotePath -eq "/") { "/" } else { $remotePath }
+                        $existingFiles = @()
+
+                        function Get-RemoteFiles {
+                            param([string]$Directory, [string]$BasePath = "")
+
+                            try {
+                                $items = $session.ListDirectory($Directory)
+                                foreach ($item in $items.Files) {
+                                    if ($item.Name -eq "." -or $item.Name -eq "..") { continue }
+
+                                    $itemPath = if ($BasePath -eq "") { $item.Name } else { "$BasePath/$($item.Name)" }
+
+                                    if ($item.IsDirectory) {
+                                        $subDirPath = if ($Directory -eq "/") { "/$($item.Name)" } else { "$Directory/$($item.Name)" }
+                                        Get-RemoteFiles -Directory $subDirPath -BasePath $itemPath
+                                    } else {
+                                        $script:existingFiles += $itemPath
+                                    }
+                                }
+                            } catch {
+                                Write-Host "   • ⚠️  Could not list directory $Directory : $($_.Exception.Message)"
+                            }
+                        }
+
+                        Get-RemoteFiles -Directory $remoteDirectory
+
+                        Write-Host "   • Found $($existingFiles.Count) existing files on server"
+                        Write-Host "   • Current deployment contains $($uploadedFiles.Count) files"
+
+                        # Find files to delete (exist on server but not in current deployment)
+                        $filesToDelete = @()
+                        foreach ($existingFile in $existingFiles) {
+                            if ($uploadedFiles -notcontains $existingFile) {
+                                if (Test-PreserveFile -FilePath $existingFile -Patterns $preserveList) {
+                                    Write-Host "   • 🔒 Preserved: `e[33m$existingFile`e[0m (matches preserve pattern)"
+                                } else {
+                                    $filesToDelete += $existingFile
+                                }
+                            }
+                        }
+
+                        # Delete old files
+                        foreach ($fileToDelete in $filesToDelete) {
+                            $remoteFilePath = if ($remoteDirectory -eq "/") { "/$fileToDelete" } else { "$remoteDirectory/$fileToDelete" }
+                            $remoteFilePath = $remoteFilePath -replace '/+', '/'
+
+                            try {
+                                $session.RemoveFiles($remoteFilePath)
+                                Write-Host "   • 🗑️  Deleted: `e[31m$fileToDelete`e[0m"
+                                $cleanupCount++
+                            } catch {
+                                Write-Host "   • ⚠️  Could not delete `e[33m$fileToDelete`e[0m: $($_.Exception.Message)"
+                            }
+                        }
+
+                        if ($filesToDelete.Count -eq 0) {
+                            Write-Host "   • ✅ No old files to cleanup"
+                        }
+
+                    } catch {
+                        Write-Host "   • ⚠️  Cleanup failed: $($_.Exception.Message)" -ForegroundColor Yellow
+                        Write-Host "   • 📤 Deployment was successful, but cleanup encountered issues"
+                    }
+                }
+
+                $session.Close()
+                Write-Host "🎉 FTP deployment completed successfully!" -ForegroundColor Green
+                Write-Host "   • Files uploaded: `e[32m$uploadCount`e[0m"
+                if ($skippedCount -gt 0) {
+                    Write-Host "   • Files skipped: `e[33m$skippedCount`e[0m"
+                }
+                if ($cleanupCount -gt 0) {
+                    Write-Host "   • Files cleaned up: `e[31m$cleanupCount`e[0m"
+                }
+
+            } catch {
+                Write-Host "❌ FTP deployment failed: $($_.Exception.Message)" -ForegroundColor Red
+                if ($session) { $session.Dispose() }
+                exit 1
+            }
+        } else {
+            Write-Host "🔧 Using native .NET FTP client..." -ForegroundColor Cyan
+            Write-Host "⚠️  Note: Native client has limited protocol support (FTP only)" -ForegroundColor Yellow
+
+            if ($protocol -ne "ftp") {
+                Write-Host "❌ Native .NET client only supports FTP protocol. Please install WinSCP module for FTPS/SFTP support." -ForegroundColor Red
+                exit 1
+            }
+
+            try {
+                # Simple FTP upload using .NET FtpWebRequest
+                $ftpUri = "ftp://$server`:$port$remotePath"
+                Write-Host "   • Connecting to: `e[36m$ftpUri`e[0m"
+
+                $uploadCount = 0
+                $skippedCount = 0
+
+                Get-ChildItem -Path $deployPath -Recurse -File | ForEach-Object {
+                    $relativePath = $_.FullName.Substring($deployPath.Length).TrimStart('\', '/')
+                    $relativePath = $relativePath -replace '\\', '/'
+
+                    if (Test-ExcludeFile -FilePath $relativePath -Patterns $excludeList) {
+                        Write-Host "   • ⏭️  Skipped: `e[33m$relativePath`e[0m (excluded)"
+                        $skippedCount++
+                        return
+                    }
+
+                    $remoteFileUri = "$ftpUri/$relativePath" -replace '/+', '/'
+
+                    try {
+                        $request = [System.Net.FtpWebRequest]::Create($remoteFileUri)
+                        $request.Method = [System.Net.WebRequestMethods+Ftp]::UploadFile
+                        $request.Credentials = New-Object System.Net.NetworkCredential($username, $password)
+                        $request.UsePassive = $passiveMode
+
+                        $fileContent = [System.IO.File]::ReadAllBytes($_.FullName)
+                        $request.ContentLength = $fileContent.Length
+
+                        $requestStream = $request.GetRequestStream()
+                        $requestStream.Write($fileContent, 0, $fileContent.Length)
+                        $requestStream.Close()
+
+                        $response = $request.GetResponse()
+                        $response.Close()                        Write-Host "   • ✅ Uploaded: `e[32m$relativePath`e[0m"
+                        $uploadCount++
+                    } catch {
+                        Write-Host "   • ❌ Failed to upload `e[31m$relativePath`e[0m: $($_.Exception.Message)"
+                        throw
+                    }
+                }
+
+                # Cleanup old files if requested (Note: Limited functionality with native client)
+                $cleanupCount = 0
+                if ([bool]"${{ inputs.clean-target }}") {
+                    Write-Host "🧹 Starting cleanup of old files..." -ForegroundColor Cyan
+                    Write-Host "⚠️  Note: Cleanup with native .NET client has limited functionality" -ForegroundColor Yellow
+
+                    # Parse preserve patterns
+                    $preservePatterns = "${{ inputs.preserve-patterns }}"
+                    $preserveList = @()
+                    if (-not [string]::IsNullOrWhiteSpace($preservePatterns)) {
+                        $preserveList = $preservePatterns -split ',' | ForEach-Object { $_.Trim() }
+                        Write-Host "   • Preserve patterns: `e[36m$($preserveList -join ', ')`e[0m"
+                    }
+
+                    function Test-PreserveFile {
+                        param([string]$FilePath, [string[]]$Patterns)
+                        if ($Patterns.Count -eq 0) { return $false }
+
+                        foreach ($pattern in $Patterns) {
+                            if ($FilePath -like $pattern) {
+                                return $true
+                            }
+                        }
+                        return $false
+                    }
+
+                    try {
+                        # Get list of uploaded files (our new deployment)
+                        $uploadedFiles = @()
+                        Get-ChildItem -Path $deployPath -Recurse -File | ForEach-Object {
+                            $relativePath = $_.FullName.Substring($deployPath.Length).TrimStart('\', '/')
+                            $relativePath = $relativePath -replace '\\', '/'
+
+                            if (-not (Test-ExcludeFile -FilePath $relativePath -Patterns $excludeList)) {
+                                $uploadedFiles += $relativePath
+                            }
+                        }
+
+                        # Try to list existing files on server (limited support)
+                        try {
+                            $listRequest = [System.Net.FtpWebRequest]::Create($ftpUri)
+                            $listRequest.Method = [System.Net.WebRequestMethods+Ftp]::ListDirectoryDetails
+                            $listRequest.Credentials = New-Object System.Net.NetworkCredential($username, $password)
+                            $listRequest.UsePassive = $passiveMode
+
+                            $listResponse = $listRequest.GetResponse()
+                            $listStream = $listResponse.GetResponseStream()
+                            $reader = New-Object System.IO.StreamReader($listStream)
+                            $directoryListing = $reader.ReadToEnd()
+                            $reader.Close()
+                            $listResponse.Close()
+
+                            $existingFiles = @()
+                            $directoryListing -split "`n" | ForEach-Object {
+                                $line = $_.Trim()
+                                if ($line -and -not $line.StartsWith("d")) {
+                                    # Simple parsing - get filename (last part after spaces)
+                                    $parts = $line -split '\s+'
+                                    if ($parts.Length -gt 0) {
+                                        $fileName = $parts[-1]
+                                        if ($fileName -and $fileName -ne "." -and $fileName -ne "..") {
+                                            $existingFiles += $fileName
+                                        }
+                                    }
+                                }
+                            }
+
+                            Write-Host "   • Found $($existingFiles.Count) existing files on server"
+                            Write-Host "   • ⚠️  Note: Only root-level files can be cleaned with native client"
+
+                            # Find files to delete (exist on server but not in current deployment)
+                            $filesToDelete = @()
+                            foreach ($existingFile in $existingFiles) {
+                                if ($uploadedFiles -notcontains $existingFile) {
+                                    if (Test-PreserveFile -FilePath $existingFile -Patterns $preserveList) {
+                                        Write-Host "   • 🔒 Preserved: `e[33m$existingFile`e[0m (matches preserve pattern)"
+                                    } else {
+                                        $filesToDelete += $existingFile
+                                    }
+                                }
+                            }
+
+                            # Delete old files
+                            foreach ($fileToDelete in $filesToDelete) {
+                                $deleteUri = "$ftpUri/$fileToDelete" -replace '/+', '/'
+
+                                try {
+                                    $deleteRequest = [System.Net.FtpWebRequest]::Create($deleteUri)
+                                    $deleteRequest.Method = [System.Net.WebRequestMethods+Ftp]::DeleteFile
+                                    $deleteRequest.Credentials = New-Object System.Net.NetworkCredential($username, $password)
+                                    $deleteRequest.UsePassive = $passiveMode
+
+                                    $deleteResponse = $deleteRequest.GetResponse()
+                                    $deleteResponse.Close()
+
+                                    Write-Host "   • 🗑️  Deleted: `e[31m$fileToDelete`e[0m"
+                                    $cleanupCount++
+                                } catch {
+                                    Write-Host "   • ⚠️  Could not delete `e[33m$fileToDelete`e[0m: $($_.Exception.Message)"
+                                }
+                            }
+
+                            if ($filesToDelete.Count -eq 0) {
+                                Write-Host "   • ✅ No old files to cleanup"
+                            }
+
+                        } catch {
+                            Write-Host "   • ⚠️  Could not list server files for cleanup: $($_.Exception.Message)"
+                            Write-Host "   • 💡 Consider using WinSCP module for better cleanup support"
+                        }
+
+                    } catch {
+                        Write-Host "   • ⚠️  Cleanup failed: $($_.Exception.Message)" -ForegroundColor Yellow
+                        Write-Host "   • 📤 Deployment was successful, but cleanup encountered issues"
+                    }
+                }
+
+                Write-Host "🎉 FTP deployment completed successfully!" -ForegroundColor Green
+                Write-Host "   • Files uploaded: `e[32m$uploadCount`e[0m"
+                if ($skippedCount -gt 0) {
+                    Write-Host "   • Files skipped: `e[33m$skippedCount`e[0m"
+                }
+                if ($cleanupCount -gt 0) {
+                    Write-Host "   • Files cleaned up: `e[31m$cleanupCount`e[0m"
+                }
+
+            } catch {
+                Write-Host "❌ FTP deployment failed: $($_.Exception.Message)" -ForegroundColor Red
+                exit 1
+            }
+        }
+
+branding:
+  icon: "upload"
+  color: "green"

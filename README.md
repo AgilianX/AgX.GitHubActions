@@ -5,4 +5,5 @@ This repository contains reusable GitHub Actions for deployment and automation.
 
 ## Available Actions
 
-- [MSDeploy Deploy](./src/msdeploy/README.md) — Deploy .NET apps to IIS using Web Deploy. Supports both folder and zip package deployments. See the action's README for usage and input details.
+- [MSDeploy Deploy](./src/msdeploy/README.md) — Deploy .NET apps to IIS using Web Deploy. Supports both folder and zip package deployments.
+- [FTP Deploy](./src/ftpdeploy/README.md) — Deploy files to servers using FTP, FTPS, or SFTP protocols. Supports cleanup functionality and file preservation patterns.
