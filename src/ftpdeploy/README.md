@@ -240,12 +240,10 @@ jobs:
       - name: FTP Deploy to SmarterASP.NET
         uses: AgilianX/AgX.GitHubActions/src/ftpdeploy@master
         with:
-          method: content
-          package-path: ${{ env.PUBLISH_PACKAGE }}
           server: ${{ secrets.FTP_SERVER }}
+          remote-path: ${{ vars.FTP_SITE_PATH }} # Preconfigured user does not append this automatically
           username: ${{ secrets.FTP_USERNAME }}
           password: ${{ secrets.FTP_PASSWORD }}
-          # remote-path not needed - FTP user pre-configured to /mysite directory
           clean-target: true
           preserve-patterns: "*.db,*.sqlite,*.sqlite3,logs/*" # preserve sqlite and logs
 ```
