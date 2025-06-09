@@ -74,7 +74,7 @@ runs:
         if ([string]::IsNullOrWhiteSpace("${{ inputs.package-path }}")) {
           $inputPath = "${{ github.workspace }}"
         } else {
-          $inputPath = Join-Path "${{ github.workspace }}" ${{ inputs.package-path }}
+          $inputPath = Join-Path "${{ github.workspace }}" "${{ inputs.package-path }}"
         }
 
         Write-Host "🔍 Path analysis:" -ForegroundColor Cyan
@@ -215,8 +215,8 @@ runs:
         $password = "${{ inputs.password }}"
         $remotePath = "${{ inputs.remote-path }}"
         $protocol = "${{ inputs.protocol }}"
-        $passiveMode = [bool]"${{ inputs.passive-mode }}"
-        $verifySSL = [bool]"${{ inputs.verify-ssl }}"
+        $passiveMode = if ("${{ inputs.passive-mode }}" -eq "true") { $true } else { $false }
+        $verifySSL = if ("${{ inputs.verify-ssl }}" -eq "true") { $true } else { $false }
         $excludePatterns = "${{ inputs.exclude-patterns }}"
 
         # Parse exclude patterns
@@ -275,8 +275,10 @@ runs:
                         $session.CreateDirectory($remotePath)
                         Write-Host "   • Created/verified remote directory: `e[36m$remotePath`e[0m"
                     } catch {
-                        # Directory might already exist, that's OK
-                    }
+                        # Only ignore if directory already exists
+                        if ($_.Exception.Message -notlike "*already exists*" -and $_.Exception.Message -notlike "*exist*") {
+                            Write-Host "   • ⚠️  Could not create directory: $($_.Exception.Message)" -ForegroundColor Yellow
+                        }
                 }
 
                 # Upload files
@@ -294,7 +296,9 @@ runs:
                     }
 
                     $remoteFilePath = if ($remotePath -eq "/") { "/$relativePath" } else { "$remotePath/$relativePath" }
-                    $remoteFilePath = $remoteFilePath -replace '/+', '/'                    try {
+                    $remoteFilePath = $remoteFilePath -replace '/+', '/'
+                    
+                    try {
                         $session.PutFiles($_.FullName, $remoteFilePath, $false, $null)
                         Write-Host "   • ✅ Uploaded: `e[32m$relativePath`e[0m"
                         $uploadCount++
@@ -343,7 +347,7 @@ runs:
 
                         # Get list of existing files on server
                         $remoteDirectory = if ([string]::IsNullOrWhiteSpace($remotePath) -or $remotePath -eq "/") { "/" } else { $remotePath }
-                        $existingFiles = @()
+                        $script:existingFiles = @()
 
                         function Get-RemoteFiles {
                             param([string]$Directory, [string]$BasePath = "")
@@ -359,7 +363,7 @@ runs:
                                         $subDirPath = if ($Directory -eq "/") { "/$($item.Name)" } else { "$Directory/$($item.Name)" }
                                         Get-RemoteFiles -Directory $subDirPath -BasePath $itemPath
                                     } else {
-                                        $script:existingFiles += $itemPath
+                                        $existingFiles += $itemPath
                                     }
                                 }
                             } catch {
@@ -420,7 +424,9 @@ runs:
 
             } catch {
                 Write-Host "❌ FTP deployment failed: $($_.Exception.Message)" -ForegroundColor Red
-                if ($session) { $session.Dispose() }
+                if ($session -and $session.Opened) { 
+                    $session.Dispose() 
+                }
                 exit 1
             }
         } else {
@@ -434,7 +440,8 @@ runs:
 
             try {
                 # Simple FTP upload using .NET FtpWebRequest
-                $ftpUri = "ftp://$server`:$port$remotePath"
+                $encodedPath = [System.Uri]::EscapeUriString($remotePath)
+                $ftpUri = "ftp://${server}:${port}${encodedPath}"
                 Write-Host "   • Connecting to: `e[36m$ftpUri`e[0m"
 
                 $uploadCount = 0
@@ -466,7 +473,8 @@ runs:
                         $requestStream.Close()
 
                         $response = $request.GetResponse()
-                        $response.Close()                        Write-Host "   • ✅ Uploaded: `e[32m$relativePath`e[0m"
+                        $response.Close()                        
+                        Write-Host "   • ✅ Uploaded: `e[32m$relativePath`e[0m"
                         $uploadCount++
                     } catch {
                         Write-Host "   • ❌ Failed to upload `e[31m$relativePath`e[0m: $($_.Exception.Message)"
