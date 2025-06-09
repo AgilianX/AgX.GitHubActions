@@ -137,6 +137,7 @@ try {
         }
         catch {
             Write-Host "❌ `e[31mError uploading file `e[36m$($currentFile.Name)`e[31m:`e[0m $($_.Exception.Message)"
+            Write-Host "❌ `e[31mRemote Pat:`e[36m$remoteFileUri`e[0m"
             Write-Host "❌ `e[31mError details:`e[0m $($_.Exception.GetType().FullName)"
             Write-Host "❌ `e[31mStack trace:`e[0m $($_.ScriptStackTrace)"
             throw
