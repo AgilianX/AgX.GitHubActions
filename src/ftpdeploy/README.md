@@ -206,7 +206,6 @@ jobs:
         uses: AgilianX/AgX.GitHubActions/src/ftpdeploy@master
         with:
           server: ${{ secrets.FTP_SERVER }}
-          remote-path: ${{ vars.FTP_SITE_PATH }} # Preconfigured user does not append this automatically
           username: ${{ secrets.FTP_USERNAME }}
           password: ${{ secrets.FTP_PASSWORD }}
           clean-target: true
