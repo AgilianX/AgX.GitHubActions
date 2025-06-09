@@ -21,7 +21,7 @@ inputs:
     description: "FTP server hostname or URL"
     required: true
   port:
-    description: "FTP server port (default: 21 for FTP, 990 for FTPS)"
+    description: "FTP server port"
     required: false
     default: "21"
   username:
@@ -34,15 +34,6 @@ inputs:
     description: "Remote directory path on FTP server (e.g., '/', '/wwwroot')"
     required: false
     default: "/"
-  protocol:
-    type: choice
-    description: "FTP protocol to use - defaults to FTP if not specified"
-    options:
-      - ftp
-      - ftps
-      - sftp
-    default: ftp
-    required: false
   passive-mode:
     type: boolean
     description: "Use passive mode for FTP connections"
@@ -50,11 +41,6 @@ inputs:
     required: false
   exclude-patterns:
     description: "File patterns to exclude from upload (comma-separated, e.g., '*.log,temp/*')"
-    required: false
-  verify-ssl:
-    type: boolean
-    description: "Verify SSL certificates for FTPS connections"
-    default: true
     required: false
   clean-target:
     type: boolean
@@ -80,7 +66,6 @@ runs:
         Write-Host "🔍 Path analysis:" -ForegroundColor Cyan
         Write-Host "   • Workspace: `e[36m${{ github.workspace }}`e[0m"
         Write-Host "   • Method: `e[36m${{ inputs.method }}`e[0m"
-        Write-Host "   • Protocol: `e[36m${{ inputs.protocol }}`e[0m"
         Write-Host "   • Server: `e[36m${{ inputs.server }}`e[0m"
         Write-Host "   • Port: `e[36m${{ inputs.port }}`e[0m"
         Write-Host "   • Remote path: `e[36m${{ inputs.remote-path }}`e[0m"
@@ -176,37 +161,10 @@ runs:
         } else {
             echo "DEPLOY_PATH=$env:SOURCE_PATH" >> $env:GITHUB_ENV
         }
-
-    - name: Install required PowerShell modules
-      shell: pwsh
-      run: |
-        Write-Host "📥 Installing FTP PowerShell modules..." -ForegroundColor Cyan
-
-        # Check if running in a constrained environment
-        $policy = Get-ExecutionPolicy
-        if ($policy -eq "Restricted") {
-            Write-Host "⚠️  Setting execution policy for current process..." -ForegroundColor Yellow
-            Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process -Force
-        }
-
-        try {
-            # Try to install/import WinSCP module for better FTP support
-            if (-not (Get-Module -ListAvailable -Name "WinSCP" -ErrorAction SilentlyContinue)) {
-                Write-Host "   • Installing WinSCP PowerShell module..."
-                Install-Module -Name WinSCP -Force -Scope CurrentUser -Repository PSGallery
-            }
-            Import-Module WinSCP -Force            Write-Host "   • ✅ WinSCP module loaded successfully"
-            echo "FTP_METHOD=WinSCP" >> $env:GITHUB_ENV
-        } catch {
-            Write-Host "   • ⚠️  WinSCP module not available, using native .NET FTP client"
-            echo "FTP_METHOD=Native" >> $env:GITHUB_ENV
-        }
-
     - name: Execute FTP deployment
       shell: pwsh
       run: |
         $scriptPath = Join-Path "${{ github.action_path }}" "Execute-FtpDeployment.ps1"
-
         $params = @{
             DeployPath = $env:DEPLOY_PATH
             Server = "${{ inputs.server }}"
@@ -214,9 +172,7 @@ runs:
             Username = "${{ inputs.username }}"
             Password = "${{ inputs.password }}"
             RemotePath = "${{ inputs.remote-path }}"
-            Protocol = "${{ inputs.protocol }}"
             PassiveMode = if ("${{ inputs.passive-mode }}" -eq "true") { $true } else { $false }
-            VerifySSL = if ("${{ inputs.verify-ssl }}" -eq "true") { $true } else { $false }
             ExcludePatterns = "${{ inputs.exclude-patterns }}"
             CleanTarget = if ("${{ inputs.clean-target }}" -eq "true") { $true } else { $false }
             PreservePatterns = "${{ inputs.preserve-patterns }}"

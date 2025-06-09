@@ -1,6 +1,6 @@
 # FTP Deploy GitHub Action
 
-This reusable GitHub Action deploys files to a server using FTP, FTPS, or SFTP protocols. It supports deploying either a publish directory (content) or a zip archive (package), with flexible options for different FTP configurations.
+This reusable GitHub Action deploys files to a server using FTP protocol. It supports deploying either a publish directory (content) or a zip archive (package), with flexible options for FTP configurations.
 
 ## ⚠️ Danger Zone
 
@@ -23,23 +23,23 @@ This reusable GitHub Action deploys files to a server using FTP, FTPS, or SFTP p
 | username            | Username for FTP authentication                                                               | Yes                        |
 | password            | Password for FTP authentication                                                               | Yes                        |
 | remote-path         | Remote directory path on FTP server (e.g., /public_html, /wwwroot)                          | No (defaults to "/")       |
-| protocol            | FTP protocol to use: `ftp`, `ftps`, or `sftp`                                               | No (defaults to `ftp`)     |
 | passive-mode        | Use passive mode for FTP connections                                                         | No (defaults to `true`)    |
 | exclude-patterns    | File patterns to exclude from upload (comma-separated, e.g., '*.log,temp/*')                | No                         |
-| verify-ssl          | Verify SSL certificates for FTPS connections                                                 | No (defaults to `true`)    |
 | clean-target        | Clean up old files on server that are not part of the new deployment                        | No (defaults to `false`)   |
 | preserve-patterns   | File patterns to preserve during cleanup (comma-separated, e.g., '*.db,logs/*,config.json') | No                         |
 
-## Protocol Support
-
-This action supports three FTP protocols:
-
-- **FTP**: Standard File Transfer Protocol (default)
-- **FTPS**: FTP over SSL/TLS (File Transfer Protocol Secure)
-- **SFTP**: SSH File Transfer Protocol
+## Implementation
 
 > [!NOTE]
-> The action automatically attempts to use the WinSCP PowerShell module for enhanced protocol support and features. If WinSCP is not available, it falls back to the native .NET FTP client (FTP only).
+> This action uses the native .NET FTP client (`FtpWebRequest`) to provide reliable FTP file transfer capabilities.
+
+The implementation includes:
+
+- **FTP Protocol**: Standard File Transfer Protocol support
+- **Directory Management**: Automatic creation of remote directories as needed
+- **File Exclusions**: Pattern-based file filtering during upload
+- **Cleanup Functionality**: Comprehensive cleanup of old files with recursive directory support
+- **Error Handling**: Detailed error reporting and logging
 
 ## Notes on Artifact Handling
 
@@ -58,7 +58,8 @@ The action includes optional cleanup functionality to remove old files from the 
 
 ### Cleanup Behavior
 
-When `clean-target` is enabled, the action will:
+> [!Warning]
+> When `clean-target` is enabled, the action will:
 
 1. **Upload all new files** to the server
 2. **List existing files** on the remote directory
@@ -79,17 +80,17 @@ preserve-patterns: "*.db,logs/*,config.json,uploads/**"
 
 ### Important Notes
 
-- **WinSCP method**: Full recursive cleanup support with subdirectories
-- **Native .NET method**: Limited to root-level files only (subdirectories not cleaned)
+- **Full recursive cleanup**: Complete cleanup support with subdirectories and nested folder structures
 - **Safety**: Cleanup only runs after successful upload
 - **Error handling**: Upload succeeds even if cleanup fails
 
 ## Security Considerations
 
 - Always use secrets for sensitive information like passwords and usernames
-- For FTPS connections, consider setting `verify-ssl: true` for production environments
-- Use SFTP when possible for enhanced security over standard FTP
+- Use passive mode when possible to avoid firewall issues
 - Consider using exclude patterns to prevent uploading sensitive files
+- Regularly rotate FTP credentials
+- Use strong passwords for FTP authentication
 
 ## Example Usage
 
@@ -150,39 +151,6 @@ jobs:
           remote-path: "/mysite"
 ```
 
-### FTPS Upload with SSL Verification
-
-```yaml
-      - name: Deploy with FTPS (secure)
-        uses: AgilianX/AgX.GitHubActions/src/ftpdeploy@master
-        with:
-          method: content
-          package-path: ${{ env.PUBLISH_PACKAGE }}
-          protocol: ftps
-          server: ${{ secrets.FTPS_SERVER }}
-          port: 990
-          username: ${{ secrets.FTPS_USERNAME }}
-          password: ${{ secrets.FTPS_PASSWORD }}
-          remote-path: "/mysite"
-          verify-ssl: true
-```
-
-### SFTP Upload with File Exclusions
-
-```yaml
-      - name: Deploy with SFTP
-        uses: AgilianX/AgX.GitHubActions/src/ftpdeploy@master
-        with:
-          method: content
-          package-path: ${{ env.PUBLISH_PACKAGE }}
-          protocol: sftp
-          server: ${{ secrets.SFTP_SERVER }}
-          port: 22
-          username: ${{ secrets.SFTP_USERNAME }}
-          password: ${{ secrets.SFTP_PASSWORD }}
-          remote-path: "/mysite"
-```
-
 ### Zip Package Deployment
 
 ```yaml
@@ -197,21 +165,18 @@ jobs:
           remote-path: "/mysite"
 ```
 
-### FTPS Upload with Full Cleanup
+### FTP Upload with Full Cleanup
 
 ```yaml
-      - name: Deploy with FTPS (full clean deployment)
+      - name: Deploy with FTP (full clean deployment)
         uses: AgilianX/AgX.GitHubActions/src/ftpdeploy@master
         with:
           method: content
           package-path: ${{ env.PUBLISH_PACKAGE }}
-          protocol: ftps
-          server: ${{ secrets.FTPS_SERVER }}
-          port: 990
+          server: ${{ secrets.FTP_SERVER }}
           username: ${{ secrets.FTP_USERNAME }}
           password: ${{ secrets.FTP_PASSWORD }}
           remote-path: "/mysite"
-          verify-ssl: true
           clean-target: true
           # No preserve-patterns = clean everything not in deployment
 ```
@@ -276,11 +241,10 @@ secrets:
 
 ### Troubleshooting
 
-- **Connection Issues**: Check server, port, and protocol settings
+- **Connection Issues**: Check server, port, and passive mode settings
 - **Authentication Failures**: Verify username and password in secrets
-- **SSL/TLS Issues**: For FTPS, try setting `verify-ssl: false` for testing (not recommended for production)
 - **File Upload Failures**: Check remote-path permissions and ensure directory exists
-- **Module Installation Issues**: The action automatically handles PowerShell module installation, but corporate firewalls might block downloads
+- **Large File Issues**: FTP may have timeout issues with very large files
 
 ---
 
