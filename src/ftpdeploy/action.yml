@@ -50,6 +50,19 @@ inputs:
   preserve-patterns:
     description: "File patterns to preserve during cleanup (comma-separated, e.g., '*.db,logs/*,config.json')"
     required: false
+  test-ftp-directory:
+    description: "Test FTP connectivity by attempting to access/create a directory path (relative to remote-path, e.g., 'test-dir' or 'subdirs/test'). Leave empty to skip directory test."
+    default: "agx.test-ftp-dir"
+    required: false
+  test-ftp-file:
+    description: "Test FTP connectivity by attempting to create a test file (relative to remote-path, e.g., 'test-file.tmp' or 'subdirs/test.txt'). Leave empty to skip file test."
+    default: "agx.test-ftp-file.tmp"
+    required: false
+  disable-connectivity-tests:
+    type: boolean
+    description: "Disable FTP connectivity tests (directory and file creation). Use with caution!"
+    default: false
+    required: false
 
 runs:
   using: "composite"
@@ -165,6 +178,7 @@ runs:
       shell: pwsh
       run: |
         $scriptPath = Join-Path "${{ github.action_path }}" "Execute-FtpDeployment.ps1"
+
         $params = @{
             DeployPath = $env:DEPLOY_PATH
             Server = "${{ inputs.server }}"
@@ -176,6 +190,9 @@ runs:
             ExcludePatterns = "${{ inputs.exclude-patterns }}"
             CleanTarget = if ("${{ inputs.clean-target }}" -eq "true") { $true } else { $false }
             PreservePatterns = "${{ inputs.preserve-patterns }}"
+            TestFtpDirectory = "${{ inputs.test-ftp-directory }}"
+            TestFtpFile = "${{ inputs.test-ftp-file }}"
+            DisableConnectivityTests = if ("${{ inputs.disable-connectivity-tests }}" -eq "true") { $true } else { $false }
         }
 
         & $scriptPath @params

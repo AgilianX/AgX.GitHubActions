@@ -1,5 +1,13 @@
-﻿[System.Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingPlainTextForPassword', '', Justification = 'Password received as string from GitHub Actions secrets')]
-[System.Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '', Justification = 'Write-Host is used intentionally for GitHub Actions console output and logging')]
+﻿[System.Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingPlainTextForPassword', '',
+    Justification = 'Password received as string from GitHub Actions secrets')]
+[System.Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '',
+    Justification = 'Write-Host is used intentionally for GitHub Actions console output and logging')]
+[System.Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '',
+    Justification = 'Internal function for FTP operations')]
+[System.Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseApprovedVerbs', '',
+    Justification = 'Internal function for FTP operations')]
+[System.Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+    Justification = 'ShouldProcess not needed for internal FTP operations in deployment context')]
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory = $true)]
@@ -32,7 +40,16 @@ param(
     [bool]$CleanTarget = $false,
 
     [Parameter(Mandatory = $false)]
-    [string]$PreservePatterns = ''
+    [string]$PreservePatterns = '',
+
+    [Parameter(Mandatory = $false)]
+    [string]$TestFtpDirectory = '',
+
+    [Parameter(Mandatory = $false)]
+    [string]$TestFtpFile = '',
+
+    [Parameter(Mandatory = $false)]
+    [bool]$DisableConnectivityTests = $false
 )
 
 # HELPER FUNCTIONS
@@ -396,8 +413,7 @@ function Test-FtpPath {
     }
 }
 
-function New-FtpDirectory {
-    [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'ShouldProcess not needed for internal FTP operations in deployment context')]
+function Create-FtpDirectory {
     param(
         [string]$DirectoryUri,
         [System.Net.NetworkCredential]$Credentials,
@@ -412,35 +428,18 @@ function New-FtpDirectory {
 
         $response = $request.GetResponse()
         $response.Close()
+        Write-Host "   • ✅ Created directory: `e[32mftp://$DirectoryUri`e[0m"
         return $true
     }
     catch {
         # Enhanced directory creation error handling
         Write-Host "   • ⚠️  Directory creation failed for `e[33mftp://$DirectoryUri`e[0m"
-
-        # Check if it's a WebException with FTP response
-        if ($_.Exception -is [System.Net.WebException] -and $_.Exception.Response) {
-            $ftpResponse = $_.Exception.Response
-            if ($ftpResponse -is [System.Net.FtpWebResponse]) {
-                Write-Host "   • FTP Status Code: `e[33m$($ftpResponse.StatusCode)`e[0m"
-                Write-Host "   • FTP Status Description: `e[33m$($ftpResponse.StatusDescription)`e[0m"
-
-                # If it's a 550 error, directory might already exist
-                if ($ftpResponse.StatusCode -eq [System.Net.FtpStatusCode]::ActionNotTakenFileUnavailable) {
-                    Write-Host '   • ℹ️  Directory likely already exists (FTP 550)'
-                    return $true  # Directory already exists
-                }
-            }
+        Write-FtpErrorDetails -ErrorRecord $_ -Context "Directory creation for '$DirectoryUri'" -AdditionalInfo @{
+            'FTP URI'     = "ftp://$DirectoryUri"
+            'Operation'   = 'Create directory'
+            'Credentials' = $Credentials.UserName
+            'Use Passive' = $UsePassive
         }
-
-        # Legacy check for message content
-        if ($_.Exception.Message -like '*550*') {
-            Write-Host '   • ℹ️  Assuming directory exists based on error message'
-            return $true  # Directory already exists
-        }
-
-        Write-Host "   • Error details: $($_.Exception.Message)"
-        Write-Host "   • 💡 This may indicate a permissions issue or the parent directory doesn't exist"
         return $false
     }
 }
@@ -533,7 +532,9 @@ function Test-FtpConnectivity {
     param(
         [string]$FtpUri,
         [System.Net.NetworkCredential]$Credentials,
-        [bool]$UsePassive
+        [bool]$UsePassive,
+        [ValidateSet('Directory', 'File')]
+        [string]$TestType = 'Directory'
     )
 
     Write-Host "`n🔌 Testing FTP connectivity..."
@@ -622,98 +623,93 @@ function Test-FtpConnectivity {
         return $true
     }
     catch {
-        Write-Host '   • ❌ Initial FTP connectivity test failed!'
-
-        # Check if this is a 550 error (directory doesn't exist)
         $is550Error = $_.Exception.Message -like '*550*' -or ($_.Exception -is [System.Net.WebException] -and $_.Exception.Response -and $_.Exception.Response.StatusCode -eq [System.Net.FtpStatusCode]::ActionNotTakenFileUnavailable)
 
         if ($is550Error -and $pathPart -and $pathPart -ne '/') {
-            Write-Host "   • Directory doesn't exist - attempting to create it..."
+            if ($TestType -eq 'Directory') {
+                try {
+                    Write-Host "   • 📁 Target doesn't exist - Creating directory structure..."
+                    $pathSegments = $pathPart.Trim('/') -split '/'
+                    $currentPath = ''
+                    $baseUri = $FtpUri -replace '/.*$', ''  # Server:port only
 
-            # Fallback 1: Try to create the directory structure
-            try {
-                Write-Host '   • 📁 Fallback 1: Creating directory structure...'
+                    foreach ($segment in $pathSegments) {
+                        if ($segment) {
+                            $currentPath += '/' + $segment
+                            $createUri = "ftp://$baseUri$currentPath"
 
-                # Split the path and create directories progressively
-                $pathSegments = $pathPart.Trim('/') -split '/'
-                $currentPath = ''
-                $baseUri = $FtpUri -replace '/.*$', ''  # Server:port only
+                            try {
+                                $createRequest = [System.Net.FtpWebRequest]::Create($createUri)
+                                $createRequest.Method = [System.Net.WebRequestMethods+Ftp]::MakeDirectory
+                                $createRequest.Credentials = $Credentials
+                                $createRequest.UsePassive = $UsePassive
+                                $createRequest.Timeout = 15000
 
-                foreach ($segment in $pathSegments) {
-                    if ($segment) {
-                        $currentPath += '/' + $segment
-                        $createUri = "ftp://$baseUri$currentPath"
-
-                        try {
-                            $createRequest = [System.Net.FtpWebRequest]::Create($createUri)
-                            $createRequest.Method = [System.Net.WebRequestMethods+Ftp]::MakeDirectory
-                            $createRequest.Credentials = $Credentials
-                            $createRequest.UsePassive = $UsePassive
-                            $createRequest.Timeout = 15000
-
-                            $createResponse = $createRequest.GetResponse()
-                            $createResponse.Close()
-                            Write-Host "     ✅ Created directory: `e[32m$currentPath`e[0m"
-                        }
-                        catch {
-                            # Directory might already exist, which is fine
-                            if ($_.Exception.Message -like '*550*' -and $_.Exception.Message -like '*exists*') {
-                                Write-Host "     ℹ️  Directory already exists: `e[33m$currentPath`e[0m"
+                                $createResponse = $createRequest.GetResponse()
+                                $createResponse.Close()
+                                Write-Host "   • ✅ Created directory: `e[32m$currentPath`e[0m"
                             }
-                            else {
-                                Write-Host "     ⚠️  Could not create directory $currentPath`: $($_.Exception.Message)"
-                                # Continue trying other segments
+                            catch {
+                                # Directory might already exist, which is fine
+                                if ($_.Exception.Message -like '*550*' -and $_.Exception.Message -like '*exists*') {
+                                    Write-Host "     ℹ️  Directory already exists: `e[33m$currentPath`e[0m"
+                                }
+                                else {
+                                    Write-Host "     ⚠️  Could not create directory $currentPath`: $($_.Exception.Message)"
+                                    # Continue trying other segments
+                                }
                             }
                         }
                     }
-                }
 
-                # Test if we can now access the target directory
-                try {
-                    $testRequest = [System.Net.FtpWebRequest]::Create("ftp://$FtpUri")
-                    $testRequest.Method = [System.Net.WebRequestMethods+Ftp]::ListDirectoryDetails
-                    $testRequest.Credentials = $Credentials
-                    $testRequest.UsePassive = $UsePassive
-                    $testRequest.Timeout = 15000
-
-                    $testResponse = $testRequest.GetResponse()
-                    $testResponse.Close()
-                    Write-Host '   • ✅ Directory creation successful - target directory is now accessible!'
-                    return $true
-                }
-                catch {
-                    Write-Host '   • ❌ Directory creation completed but target still not accessible'
-
-                    # Fallback 2: Try to create as a file (unusual but requested)
-                    Write-Host '   • 📄 Fallback 2: Attempting to create as file...'
+                    # Test if we can now access the target directory
                     try {
-                        $fileContent = "# FTP Directory Placeholder`nCreated by AgX.FTPDeploy on $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`n"
-                        $contentBytes = [System.Text.Encoding]::UTF8.GetBytes($fileContent)
+                        $testRequest = [System.Net.FtpWebRequest]::Create("ftp://$FtpUri")
+                        $testRequest.Method = [System.Net.WebRequestMethods+Ftp]::ListDirectoryDetails
+                        $testRequest.Credentials = $Credentials
+                        $testRequest.UsePassive = $UsePassive
+                        $testRequest.Timeout = 15000
 
-                        $uploadRequest = [System.Net.FtpWebRequest]::Create("ftp://$FtpUri")
-                        $uploadRequest.Method = [System.Net.WebRequestMethods+Ftp]::UploadFile
-                        $uploadRequest.Credentials = $Credentials
-                        $uploadRequest.UsePassive = $UsePassive
-                        $uploadRequest.ContentLength = $contentBytes.Length
-                        $uploadRequest.Timeout = 15000
-
-                        $requestStream = $uploadRequest.GetRequestStream()
-                        $requestStream.Write($contentBytes, 0, $contentBytes.Length)
-                        $requestStream.Close()
-
-                        $uploadResponse = $uploadRequest.GetResponse()
-                        $uploadResponse.Close()
-
-                        Write-Host '   • ✅ Created as file successfully!'
+                        $testResponse = $testRequest.GetResponse()
+                        $testResponse.Close()
+                        Write-Host '   • ✅ Directory is accessible!'
                         return $true
                     }
                     catch {
-                        Write-Host "   • ❌ File creation also failed: $($_.Exception.Message)"
+                        Write-Host "   • ❌ Directory creation completed but target still not accessible: $($_.Exception.Message)"
                     }
                 }
+                catch {
+                    Write-Host "   • ❌ Directory creation failed: $($_.Exception.Message)"
+                }
             }
-            catch {
-                Write-Host "   • ❌ Directory creation failed: $($_.Exception.Message)"
+            elseif ($TestType -eq 'File') {
+                # Try to create as a file
+                Write-Host "   • 📄  Target doesn't exist - Creating as file..."
+                try {
+                    $fileContent = "# FTP Test File`nCreated by AgX.FTPDeploy on $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`n"
+                    $contentBytes = [System.Text.Encoding]::UTF8.GetBytes($fileContent)
+
+                    $uploadRequest = [System.Net.FtpWebRequest]::Create("ftp://$FtpUri")
+                    $uploadRequest.Method = [System.Net.WebRequestMethods+Ftp]::UploadFile
+                    $uploadRequest.Credentials = $Credentials
+                    $uploadRequest.UsePassive = $UsePassive
+                    $uploadRequest.ContentLength = $contentBytes.Length
+                    $uploadRequest.Timeout = 15000
+
+                    $requestStream = $uploadRequest.GetRequestStream()
+                    $requestStream.Write($contentBytes, 0, $contentBytes.Length)
+                    $requestStream.Close()
+
+                    $uploadResponse = $uploadRequest.GetResponse()
+                    $uploadResponse.Close()
+
+                    Write-Host "   • ✅ Created file: `e[32m$FtpUri`e[0m"
+                    return $true
+                }
+                catch {
+                    Write-Host "   • ❌ File creation failed: $($_.Exception.Message)"
+                }
             }
         }
 
@@ -777,14 +773,26 @@ try {
     $uploadCount = 0
     $skippedCount = 0
     $credentials = New-Object System.Net.NetworkCredential($Username, $Password)
-    $createdDirectories = @()
+    $createdDirectories = @()     # Perform pre-flight connectivity and permissions test
+    $connectivityOk = $true
 
-    # Perform pre-flight connectivity and permissions test
-    $connectivityOk = Test-FtpConnectivity -FtpUri "$ftpUri/directory-test" -Credentials $credentials -UsePassive $PassiveMode
-    $connectivityOk = Test-FtpConnectivity -FtpUri "$ftpUri/file.test" -Credentials $credentials -UsePassive $PassiveMode
-    if (-not $connectivityOk) {
-        Write-Host "❌ `e[31mFTP connectivity test failed. Deployment cannot proceed.`e[0m"
-        throw 'FTP connectivity test failed'
+    if (-not $DisableConnectivityTests) {
+        if (-not [string]::IsNullOrWhiteSpace($TestFtpDirectory)) {
+            $testDirUri = "$ftpUri/$($TestFtpDirectory.TrimStart('/'))" -replace '//+', '/'
+            $dirConnectivityOk = Test-FtpConnectivity -FtpUri $testDirUri -Credentials $credentials -UsePassive $PassiveMode -TestType 'Directory'
+            $connectivityOk = $connectivityOk -and $dirConnectivityOk
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($TestFtpFile)) {
+            $testFileUri = "$ftpUri/$($TestFtpFile.TrimStart('/'))" -replace '//+', '/'
+            $fileConnectivityOk = Test-FtpConnectivity -FtpUri $testFileUri -Credentials $credentials -UsePassive $PassiveMode -TestType 'File'
+            $connectivityOk = $connectivityOk -and $fileConnectivityOk
+        }
+
+        if (-not $connectivityOk) {
+            Write-Host "❌ `e[31mFTP connectivity test failed. Deployment cannot proceed.`e[0m"
+            throw 'FTP connectivity test failed'
+        }
     }
 
     Write-Host "`n📤 Starting file upload process..."
@@ -797,18 +805,18 @@ try {
                 $skippedCount++
                 return
             }
-
+            Write-Host "   • Uploading file: `e[36m$relativePath`e[0m"
             # Ensure parent directories exist
             $pathParts = $relativePath -split '/'
             if ($pathParts.Length -gt 1) {
                 $currentPath = ''
                 for ($i = 0; $i -lt ($pathParts.Length - 1); $i++) {
                     $currentPath = if ($currentPath -eq '') { $pathParts[$i] } else { "$currentPath/$pathParts[$i]" }
-                    # Construct directory URI properly
-                    $dirUri = "$ftpUri/$currentPath" -replace '//+', '/' -replace '^/', ''
+                    # Construct directory URI properly - maintain proper FTP URI format
+                    $dirUri = "$ftpUri/$currentPath" -replace '/+', '/'
 
                     if ($createdDirectories -notcontains $currentPath) {
-                        $null = New-FtpDirectory -DirectoryUri $dirUri -Credentials $credentials -UsePassive $PassiveMode
+                        $null = Create-FtpDirectory -DirectoryUri $dirUri -Credentials $credentials -UsePassive $PassiveMode
                         $createdDirectories += $currentPath
                     }
                 }
