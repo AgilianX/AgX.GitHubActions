@@ -265,6 +265,8 @@ try {
                 $requestStream = $request.GetRequestStream()
             }
             catch {
+                Write-Host "$($_.Exception.Message)"
+
                 if (-not ($_.Exception.Message -like '*550*')) {
                     # File might not exist yet
                     throw $_  # Re-throw other exceptions
