@@ -1,4 +1,6 @@
-[System.Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingPlainTextForPassword', '', Justification = 'Password received as string from GitHub Actions secrets')]
+﻿[System.Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingPlainTextForPassword', '', Justification = 'Password received as string from GitHub Actions secrets')]
+[System.Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '', Justification = 'Write-Host is used intentionally for GitHub Actions console output and logging')]
+[CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory = $true)]
     [string]$DeployPath,
@@ -33,6 +35,152 @@ param(
     [string]$PreservePatterns = ''
 )
 
+# HELPER FUNCTIONS
+
+function Test-ExcludeFile {
+    param([string]$FilePath, [string[]]$Patterns)
+    if ($Patterns.Count -eq 0) {
+        return $false
+    }
+
+    foreach ($pattern in $Patterns) {
+        if ($FilePath -like $pattern) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Test-PreserveFile {
+    param([string]$FilePath, [string[]]$Patterns)
+    if ($Patterns.Count -eq 0) {
+        return $false
+    }
+
+    foreach ($pattern in $Patterns) {
+        if ($FilePath -like $pattern) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function New-FtpDirectory {
+    [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'ShouldProcess not needed for internal FTP operations in deployment context')]
+    param(
+        [string]$DirectoryUri,
+        [System.Net.NetworkCredential]$Credentials,
+        [bool]$UsePassive
+    )
+
+    try {
+        $request = [System.Net.FtpWebRequest]::Create($DirectoryUri)
+        $request.Method = [System.Net.WebRequestMethods+Ftp]::MakeDirectory
+        $request.Credentials = $Credentials
+        $request.UsePassive = $UsePassive
+
+        $response = $request.GetResponse()
+        $response.Close()
+        return $true
+    }
+    catch {
+        # Directory might already exist, which is fine
+        if ($_.Exception.Message -like '*550*') {
+            return $true  # Directory already exists
+        }
+        Write-Host "   • ⚠️  Could not create directory `e[33m$DirectoryUri`e[0m: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Get-FtpDirectoryListing {
+    param(
+        [string]$FtpUri,
+        [System.Net.NetworkCredential]$Credentials,
+        [bool]$UsePassive
+    )
+
+    try {
+        $listRequest = [System.Net.FtpWebRequest]::Create($FtpUri)
+        $listRequest.Method = [System.Net.WebRequestMethods+Ftp]::ListDirectoryDetails
+        $listRequest.Credentials = $Credentials
+        $listRequest.UsePassive = $UsePassive
+
+        $listResponse = $listRequest.GetResponse()
+        $listStream = $listResponse.GetResponseStream()
+        $reader = New-Object System.IO.StreamReader($listStream)
+        $directoryListing = $reader.ReadToEnd()
+        $reader.Close()
+        $listResponse.Close()
+
+        return $directoryListing
+    }
+    catch {
+        Write-Host "   • ⚠️  Could not list directory `e[33m$FtpUri`e[0m: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+function Get-FtpFilesRecursive {
+    param(
+        [string]$FtpBaseUri,
+        [string]$CurrentPath,
+        [System.Net.NetworkCredential]$Credentials,
+        [bool]$UsePassive
+    )
+
+    $files = @()
+    $directories = @()
+
+    $currentUri = if ($CurrentPath -eq '') {
+        $FtpBaseUri
+    }
+    else {
+        "$FtpBaseUri/$CurrentPath" -replace '/+', '/'
+    }
+
+    $directoryListing = Get-FtpDirectoryListing -FtpUri $currentUri -Credentials $Credentials -UsePassive $UsePassive
+
+    if ($directoryListing) {
+        $directoryListing -split "`n" | ForEach-Object {
+            $line = $_.Trim()
+            if ($line) {
+                $parts = $line -split '\s+'
+                if ($parts.Length -gt 0) {
+                    $itemName = $parts[-1]
+                    if ($itemName -and $itemName -ne '.' -and $itemName -ne '..') {
+                        $itemPath = if ($CurrentPath -eq '') {
+                            $itemName
+                        }
+                        else {
+                            "$CurrentPath/$itemName"
+                        }
+
+                        if ($line.StartsWith('d')) {
+                            # It's a directory - recursively get its contents
+                            $directories += $itemPath
+                            $subResults = Get-FtpFilesRecursive -FtpBaseUri $FtpBaseUri -CurrentPath $itemPath -Credentials $Credentials -UsePassive $UsePassive
+                            $files += $subResults.Files
+                            $directories += $subResults.Directories
+                        }
+                        else {
+                            # It's a file
+                            $files += $itemPath
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return @{
+        Files       = $files
+        Directories = $directories
+    }
+}
+
+# MAIN SCRIPT EXECUTION
+
 Write-Host "🔧 `e[32mStarting FTP deployment...`e[0m"
 
 Write-Host "`n🔍 Input Parameters:"
@@ -54,20 +202,6 @@ try {
 catch {
     Write-Host "❌ `e[31mError parsing exclude patterns:`e[0m $($_.Exception.Message)"
     exit 1
-}
-
-function Test-ExcludeFile {
-    param([string]$FilePath, [string[]]$Patterns)
-    if ($Patterns.Count -eq 0) {
-        return $false
-    }
-
-    foreach ($pattern in $Patterns) {
-        if ($FilePath -like $pattern) {
-            return $true
-        }
-    }
-    return $false
 }
 
 Write-Host '🔧 Using native .NET FTP client...'
@@ -146,137 +280,11 @@ try {
 
     $cleanupCount = 0
     if ($CleanTarget) {
-
         Write-Host '🧹 Starting cleanup of old files...'
         $preserveList = @()
         if (-not [string]::IsNullOrWhiteSpace($PreservePatterns)) {
             $preserveList = $PreservePatterns -split ',' | ForEach-Object { $_.Trim() }
             Write-Host "   • Preserve patterns: `e[36m$($preserveList -join ', ')`e[0m"
-        }
-
-        function Test-PreserveFile {
-            param([string]$FilePath, [string[]]$Patterns)
-            if ($Patterns.Count -eq 0) { return $false }
-
-            foreach ($pattern in $Patterns) {
-                if ($FilePath -like $pattern) {
-                    return $true
-                }
-            }
-            return $false
-        }
-
-        function Get-FtpDirectoryListing {
-            param(
-                [string]$FtpUri,
-                [System.Net.NetworkCredential]$Credentials,
-                [bool]$UsePassive
-            )
-
-            try {
-                $listRequest = [System.Net.FtpWebRequest]::Create($FtpUri)
-                $listRequest.Method = [System.Net.WebRequestMethods+Ftp]::ListDirectoryDetails
-                $listRequest.Credentials = $Credentials
-                $listRequest.UsePassive = $UsePassive
-
-                $listResponse = $listRequest.GetResponse()
-                $listStream = $listResponse.GetResponseStream()
-                $reader = New-Object System.IO.StreamReader($listStream)
-                $directoryListing = $reader.ReadToEnd()
-                $reader.Close()
-                $listResponse.Close()
-
-                return $directoryListing
-            }
-            catch {
-                Write-Host "   • ⚠️  Could not list directory `e[33m$FtpUri`e[0m: $($_.Exception.Message)"
-                return $null
-            }
-        }
-
-        function Get-FtpFilesRecursive {
-            param(
-                [string]$FtpBaseUri,
-                [string]$CurrentPath,
-                [System.Net.NetworkCredential]$Credentials,
-                [bool]$UsePassive
-            )
-
-            $files = @()
-            $directories = @()
-
-            $currentUri = if ($CurrentPath -eq '') {
-                $FtpBaseUri
-            }
-            else {
-                "$FtpBaseUri/$CurrentPath" -replace '/+', '/'
-            }
-
-            $directoryListing = Get-FtpDirectoryListing -FtpUri $currentUri -Credentials $Credentials -UsePassive $UsePassive
-
-            if ($directoryListing) {
-                $directoryListing -split "`n" | ForEach-Object {
-                    $line = $_.Trim()
-                    if ($line) {
-                        $parts = $line -split '\s+'
-                        if ($parts.Length -gt 0) {
-                            $itemName = $parts[-1]
-                            if ($itemName -and $itemName -ne '.' -and $itemName -ne '..') {
-                                $itemPath = if ($CurrentPath -eq '') {
-                                    $itemName
-                                }
-                                else {
-                                    "$CurrentPath/$itemName"
-                                }
-
-                                if ($line.StartsWith('d')) {
-                                    # It's a directory - recursively get its contents
-                                    $directories += $itemPath
-                                    $subResults = Get-FtpFilesRecursive -FtpBaseUri $FtpBaseUri -CurrentPath $itemPath -Credentials $Credentials -UsePassive $UsePassive
-                                    $files += $subResults.Files
-                                    $directories += $subResults.Directories
-                                }
-                                else {
-                                    # It's a file
-                                    $files += $itemPath
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            return @{
-                Files       = $files
-                Directories = $directories
-            }
-        }
-
-        function New-FtpDirectory {
-            param(
-                [string]$DirectoryUri,
-                [System.Net.NetworkCredential]$Credentials,
-                [bool]$UsePassive
-            )
-
-            try {
-                $request = [System.Net.FtpWebRequest]::Create($DirectoryUri)
-                $request.Method = [System.Net.WebRequestMethods+Ftp]::MakeDirectory
-                $request.Credentials = $Credentials
-                $request.UsePassive = $UsePassive
-
-                $response = $request.GetResponse()
-                $response.Close()
-                return $true
-            }
-            catch {
-                # Directory might already exist, which is fine
-                if ($_.Exception.Message -like '*550*') {
-                    return $true  # Directory already exists
-                }
-                Write-Host "   • ⚠️  Could not create directory `e[33m$DirectoryUri`e[0m: $($_.Exception.Message)"
-                return $false
-            }
         }
 
         try {
