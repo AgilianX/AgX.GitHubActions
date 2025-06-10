@@ -43,44 +43,84 @@ param(
     [string]$PreservePatterns = '',
 
     [Parameter(Mandatory = $false)]
-    [string]$TestFtpDirectory = '',
-
-    [Parameter(Mandatory = $false)]
-    [string]$TestFtpFile = '',
-
-    [Parameter(Mandatory = $false)]
     [bool]$DisableConnectivityTests = $false
 )
 
+$protocol = 'ftp://'
+
+class Result {
+    [bool]$Success
+    [System.Object]$Value
+    [System.Exception]$Exception
+
+    Result([bool]$success, [System.Object]$value = $null, [System.Exception]$exception = $null) {
+        $this.Success = $success
+        $this.Value = $value
+        $this.Exception = $exception
+    }
+
+    Result([System.Exception]$exception) {
+        $this.Success = $false
+        $this.Value = $null
+        $this.Exception = $exception
+    }
+}
+
 # HELPER FUNCTIONS
 
-function Test-ExcludeFile {
+function New-FtpUri {
+    param(
+        [string]$BaseUri,
+        [string]$Path = ''
+    )
+
+    # Remove protocol if it's already in BaseUri
+    $cleanBaseUri = $BaseUri -replace '^ftp://', ''
+
+    # Clean and normalize the path
+    $cleanPath = $Path.Trim('/')
+
+    # Construct the final URI
+    if ([string]::IsNullOrWhiteSpace($cleanPath)) {
+        return "$protocol$cleanBaseUri"
+    }
+    else {
+        return "$protocol$cleanBaseUri/$cleanPath"
+    }
+}
+
+function New-FtpRequest {
+    param(
+        [string]$Uri,
+        [string]$Method,
+        [System.Net.NetworkCredential]$Credentials,
+        [bool]$UsePassive,
+        [int]$TimeoutMs = 15000
+    )
+
+    $request = [System.Net.FtpWebRequest]::Create($Uri)
+    $request.Method = $Method
+    $request.Credentials = $Credentials
+    $request.UsePassive = $UsePassive
+    $request.Timeout = $TimeoutMs
+
+    return $request
+}
+
+function Test-FileMatchesPatterns {
     param([string]$FilePath, [string[]]$Patterns)
     if ($Patterns.Count -eq 0) {
-        return $false
+        return [Result]::new($false)
     }
 
     foreach ($pattern in $Patterns) {
         if ($FilePath -like $pattern) {
-            return $true
+            return [Result]::new($true)
         }
     }
-    return $false
+    return [Result]::new($false)
 }
 
-function Test-PreserveFile {
-    param([string]$FilePath, [string[]]$Patterns)
-    if ($Patterns.Count -eq 0) {
-        return $false
-    }
-
-    foreach ($pattern in $Patterns) {
-        if ($FilePath -like $pattern) {
-            return $true
-        }
-    }
-    return $false
-}
 function Write-ExceptionDetails {
     param(
         [Parameter(Mandatory = $true)]
@@ -309,173 +349,44 @@ function Write-FtpErrorDetails {
     Write-Host '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
 }
 
-function Test-FtpPath {
+function Read-FtpPath {
     param(
-        [string]$FtpUri,
-        [System.Net.NetworkCredential]$Credentials,
-        [bool]$UsePassive,
-        [string]$PathToTest
-    )
-
-    Write-Host "`n🔍 Testing FTP Path: `e[36m$PathToTest`e[0m"
-
-    # Test each part of the path progressively
-    $pathParts = $PathToTest.Trim('/') -split '/'
-    $currentPath = ''
-
-    for ($i = 0; $i -lt $pathParts.Length; $i++) {
-        if ($pathParts[$i]) {
-            $currentPath += '/' + $pathParts[$i]
-            $testUri = "$FtpUri$currentPath"
-
-            Write-Host "   • Testing path segment: `e[33m$currentPath`e[0m"
-
-            try {
-                $listRequest = [System.Net.FtpWebRequest]::Create("ftp://$testUri")
-                $listRequest.Method = [System.Net.WebRequestMethods+Ftp]::ListDirectoryDetails
-                $listRequest.Credentials = $Credentials
-                $listRequest.UsePassive = $UsePassive
-                $listRequest.Timeout = 10000
-
-                $listResponse = $listRequest.GetResponse()
-                $listStream = $listResponse.GetResponseStream()
-                $reader = New-Object System.IO.StreamReader($listStream)
-                $directoryListing = $reader.ReadToEnd()
-                $reader.Close()
-                $listResponse.Close()
-
-                Write-Host "     ✅ `e[32mAccessible`e[0m - Contains $((($directoryListing -split "`n") | Where-Object { $_.Trim() }).Count) items"
-            }
-            catch {
-                Write-Host "     ❌ `e[31mNot accessible`e[0m - $($_.Exception.Message)"
-                Write-FtpErrorDetails -ErrorRecord $_ -Context "Path segment test for '$currentPath'" -AdditionalInfo @{
-                    'FTP URI'     = "ftp://$testUri"
-                    'Operation'   = 'List directory details'
-                    'Credentials' = $Credentials.UserName
-                    'Use Passive' = $UsePassive
-                }
-                break
-            }
-        }
-    }
-
-    # Also test if we can create a file in the target directory
-    if ($currentPath -eq $PathToTest.TrimEnd('/')) {
-        Write-Host "`n🧪 Testing write permissions in target directory..."
-        $testFileName = "write_test_$(Get-Date -Format 'yyyyMMdd_HHmmss').tmp"
-        $testFileUri = "$FtpUri$PathToTest/$testFileName" -replace '//+', '/'
-
-        try {
-            $uploadRequest = [System.Net.FtpWebRequest]::Create("ftp://$testFileUri")
-            $uploadRequest.Method = [System.Net.WebRequestMethods+Ftp]::UploadFile
-            $uploadRequest.Credentials = $Credentials
-            $uploadRequest.UsePassive = $UsePassive
-            $uploadRequest.Timeout = 10000
-
-            $testContent = "FTP write test - $(Get-Date)"
-            $contentBytes = [System.Text.Encoding]::UTF8.GetBytes($testContent)
-            $uploadRequest.ContentLength = $contentBytes.Length
-
-            $requestStream = $uploadRequest.GetRequestStream()
-            $requestStream.Write($contentBytes, 0, $contentBytes.Length)
-            $requestStream.Close()
-
-            $uploadResponse = $uploadRequest.GetResponse()
-            $uploadResponse.Close()
-
-            Write-Host "   ✅ `e[32mWrite test successful`e[0m - Can create files in target directory"
-
-            # Clean up test file
-            try {
-                $deleteRequest = [System.Net.FtpWebRequest]::Create("ftp://$testFileUri")
-                $deleteRequest.Method = [System.Net.WebRequestMethods+Ftp]::DeleteFile
-                $deleteRequest.Credentials = $Credentials
-                $deleteRequest.UsePassive = $UsePassive
-                $deleteRequest.Timeout = 5000
-
-                $deleteResponse = $deleteRequest.GetResponse()
-                $deleteResponse.Close()
-                Write-Host '   🧹 Test file cleaned up'
-            }
-            catch {
-                Write-Host "   ⚠️  Could not clean up test file: $testFileName"
-            }
-        }
-        catch {
-            Write-Host "   ❌ `e[31mWrite test failed`e[0m - Cannot create files in target directory"
-            if ($_.Exception -is [System.Net.WebException] -and $_.Exception.Response) {
-                $errorResponse = $_.Exception.Response
-                if ($errorResponse -is [System.Net.FtpWebResponse]) {
-                    Write-Host "     • FTP Error: $($errorResponse.StatusCode) - $($errorResponse.StatusDescription)"
-                }
-            }
-        }
-    }
-}
-
-function Create-FtpDirectory {
-    param(
-        [string]$DirectoryUri,
+        [string]$BaseUri,
+        [string]$PathToRead,
         [System.Net.NetworkCredential]$Credentials,
         [bool]$UsePassive
     )
-
+    $readPath = New-FtpUri -BaseUri $BaseUri -Path $PathToRead
+    Write-Host "`n🔍 Read FTP Path: `e[36m$readPath`e[0m"
     try {
-        $request = [System.Net.FtpWebRequest]::Create("ftp://$DirectoryUri")
-        $request.Method = [System.Net.WebRequestMethods+Ftp]::MakeDirectory
-        $request.Credentials = $Credentials
-        $request.UsePassive = $UsePassive
+        $request = New-FtpRequest -Uri "$readPath" -Method ([System.Net.WebRequestMethods+Ftp]::ListDirectoryDetails) -Credentials $Credentials -UsePassive $UsePassive -TimeoutMs 10000
 
         $response = $request.GetResponse()
-        $response.Close()
-        Write-Host "   • ✅ Created directory: `e[32mftp://$DirectoryUri`e[0m"
-        return $true
+        $stream = $response.GetResponseStream()
+        $reader = New-Object System.IO.StreamReader($stream)
+        $details = $reader.ReadToEnd()
+        $reader.Close()
+        $stream.Close()
+
+        Write-Host " • ✅ `e[32mAccessible`e[0m - Contains $((($details -split "`n") | Where-Object { $_.Trim() }).Count) items"
+        return  [Result]::new($true, $details)
     }
     catch {
-        # Enhanced directory creation error handling
-        Write-Host "   • ⚠️  Directory creation failed for `e[33mftp://$DirectoryUri`e[0m"
-        Write-FtpErrorDetails -ErrorRecord $_ -Context "Directory creation for '$DirectoryUri'" -AdditionalInfo @{
-            'FTP URI'     = "ftp://$DirectoryUri"
-            'Operation'   = 'Create directory'
+        Write-Host " • ❌ `e[31mNot accessible`e[0m - $($_.Exception.Message)"
+        Write-FtpErrorDetails -ErrorRecord $_ -Context "Read for '$readPath'" -AdditionalInfo @{
+            'FTP URI'     = $readPath
+            'Operation'   = 'Read path'
             'Credentials' = $Credentials.UserName
             'Use Passive' = $UsePassive
         }
-        return $false
+        return [Result]::new($_.Exception)
     }
 }
 
-function Get-FtpDirectoryListing {
+function Read-FtpFilesRecursive {
     param(
-        [string]$FtpUri,
-        [System.Net.NetworkCredential]$Credentials,
-        [bool]$UsePassive
-    )
-
-    try {
-        $listRequest = [System.Net.FtpWebRequest]::Create("ftp://$FtpUri")
-        $listRequest.Method = [System.Net.WebRequestMethods+Ftp]::ListDirectoryDetails
-        $listRequest.Credentials = $Credentials
-        $listRequest.UsePassive = $UsePassive
-
-        $listResponse = $listRequest.GetResponse()
-        $listStream = $listResponse.GetResponseStream()
-        $reader = New-Object System.IO.StreamReader($listStream)
-        $directoryListing = $reader.ReadToEnd()
-        $reader.Close()
-        $listResponse.Close()
-
-        return $directoryListing
-    }
-    catch {
-        Write-Host "   • ⚠️  Could not list directory `e[33mftp://$FtpUri`e[0m: $($_.Exception.Message)"
-        return $null
-    }
-}
-
-function Get-FtpFilesRecursive {
-    param(
-        [string]$FtpBaseUri,
-        [string]$CurrentPath,
+        [string]$BaseUri,
+        [string]$Path,
         [System.Net.NetworkCredential]$Credentials,
         [bool]$UsePassive
     )
@@ -483,36 +394,46 @@ function Get-FtpFilesRecursive {
     $files = @()
     $directories = @()
 
-    $currentUri = if ($CurrentPath -eq '') {
-        $FtpBaseUri
+    $currentUri = if ($Path -eq '') {
+        $BaseUri
     }
     else {
-        "$FtpBaseUri/$CurrentPath" -replace '/+', '/'
+        "$BaseUri/$Path"
     }
 
-    $directoryListing = Get-FtpDirectoryListing -FtpUri $currentUri -Credentials $Credentials -UsePassive $UsePassive
+    $result = Read-FtpPath -BaseUri $currentUri -PathToRead '' -Credentials $Credentials -UsePassive $UsePassive
+    if (-not $result.Success) {
+        return [Result]::new($result.Exception)
+    }
 
-    if ($directoryListing) {
-        $directoryListing -split "`n" | ForEach-Object {
+    $details = $result.Value
+
+    if ($details) {
+        $details -split "`n" | ForEach-Object {
             $line = $_.Trim()
             if ($line) {
                 $parts = $line -split '\s+'
                 if ($parts.Length -gt 0) {
                     $itemName = $parts[-1]
                     if ($itemName -and $itemName -ne '.' -and $itemName -ne '..') {
-                        $itemPath = if ($CurrentPath -eq '') {
+                        $itemPath = if ($Path -eq '') {
                             $itemName
                         }
                         else {
-                            "$CurrentPath/$itemName"
+                            "$Path/$itemName"
                         }
 
                         if ($line.StartsWith('d')) {
                             # It's a directory - recursively get its contents
                             $directories += $itemPath
-                            $subResults = Get-FtpFilesRecursive -FtpBaseUri $FtpBaseUri -CurrentPath $itemPath -Credentials $Credentials -UsePassive $UsePassive
-                            $files += $subResults.Files
-                            $directories += $subResults.Directories
+                            $subResults = Read-FtpFilesRecursive -BaseUri $BaseUri -Path $itemPath -Credentials $Credentials -UsePassive $UsePassive
+                            if ($subResults.Success) {
+                                $files += $subResults.Value.Files
+                                $directories += $subResults.Value.Directories
+                            }
+                            else {
+                                return [Result]::new($subResults.Exception)
+                            }
                         }
                         else {
                             # It's a file
@@ -522,9 +443,138 @@ function Get-FtpFilesRecursive {
                 }
             }
         }
-    }    return @{
-        Files       = $files
-        Directories = $directories
+    }
+
+    return [Result]::new($true, @{Files = $files; Directories = $directories })
+}
+
+function New-FtpDirectory {
+    param(
+        [string]$BaseUri,
+        [string]$DirectoryUri,
+        [System.Net.NetworkCredential]$Credentials,
+        [bool]$UsePassive
+    )
+
+    $pathSegments = $DirectoryUri.Trim('/') -split '/'
+    $currentPath = ''
+
+    foreach ($segment in $pathSegments) {
+        if ($segment) {
+            $currentPath += '/' + $segment
+            $createUri = New-FtpUri -BaseUri $BaseUri -Path $currentPath
+
+            try {
+                $createRequest = New-FtpRequest -Uri $createUri -Method ([System.Net.WebRequestMethods+Ftp]::MakeDirectory) -Credentials $Credentials -UsePassive $UsePassive
+
+                $createResponse = $createRequest.GetResponse()
+                $createResponse.Close()
+                Write-Host " • ✅ Created directory: `e[32m$currentPath`e[0m"
+            }
+            catch {
+                # Directory might already exist, which is fine
+                if ($_.Exception.Message -like '*550*' -and $_.Exception.Message -like '*exists*') {
+                    return [Result]::new($true)
+                }
+                else {
+                    Write-Host " • ⚠️ Directory creation failed for `e[33m$createUri`e[0m"
+                    return [Result]::new($_.Exception)
+                }
+            }
+        }
+    }
+
+    return [Result]::new($true)
+}
+
+function Remove-FtpDirectory {
+    param(
+        [string]$BaseUri,
+        [string]$DirectoryUri,
+        [System.Net.NetworkCredential]$Credentials,
+        [bool]$UsePassive
+    )
+
+    $removeUri = New-FtpUri -BaseUri $BaseUri -Path $DirectoryUri
+
+    try {
+        $request = New-FtpRequest -Uri $removeUri -Method ([System.Net.WebRequestMethods+Ftp]::RemoveDirectory) -Credentials $Credentials -UsePassive $UsePassive
+
+        $response = $request.GetResponse()
+        $response.Close()
+        Write-Host " • ✅ Removed directory: `e[32m$removeUri`e[0m"
+        return [Result]::new($true)
+    }
+    catch {
+        Write-Host " • ⚠️ Directory removal failed for `e[33m$removeUri`e[0m"
+        return [Result]::new($_.Exception)
+    }
+}
+
+function Upload-FtpFile {
+    param(
+        [string]$BaseUri,
+        [string]$FileUri,
+        [byte[]]$FileContent,
+        [System.Net.NetworkCredential]$Credentials,
+        [bool]$UsePassive
+    )
+
+    try {
+        # Split the FileUri into directory path and filename
+        $pathSegments = $FileUri.Trim('/') -split '/'
+        if ($pathSegments.Count -gt 1) {
+            # Extract directory path (all segments except the last one)
+            $directoryPath = ($pathSegments[0..($pathSegments.Count - 2)]) -join '/'
+
+            # Create directory structure recursively (New-FtpDirectory handles this)
+            $createDirResult = New-FtpDirectory -BaseUri $BaseUri -DirectoryUri $directoryPath -Credentials $Credentials -UsePassive $UsePassive
+            if (-not $createDirResult.Success) {
+                return [Result]::new($createDirResult.Exception)
+            }
+        }
+        # Upload the file
+        $uploadUri = New-FtpUri -BaseUri $BaseUri -Path $FileUri
+        $request = New-FtpRequest -Uri $uploadUri -Method ([System.Net.WebRequestMethods+Ftp]::UploadFile) -Credentials $Credentials -UsePassive $UsePassive
+        $request.ContentLength = $FileContent.Length
+
+        $requestStream = $request.GetRequestStream()
+        $requestStream.Write($FileContent, 0, $FileContent.Length)
+        $requestStream.Close()
+
+        $response = $request.GetResponse()
+        $response.Close()
+        Write-Host " • ✅ Uploaded file: `e[32m$uploadUri`e[0m"
+        return [Result]::new($true)
+    }
+    catch {
+        Write-Host " • ⚠️ File upload failed for `e[33m$uploadUri`e[0m"
+        return [Result]::new($_.Exception)
+    }
+}
+
+function Remove-FtpFile {
+    param(
+        [string]$BaseUri,
+        [string]$FileUri,
+        [System.Net.NetworkCredential]$Credentials,
+        [bool]$UsePassive
+    )
+
+    $removeUri = New-FtpUri -BaseUri $BaseUri -Path $FileUri
+
+    try {
+        $request = New-FtpRequest -Uri $removeUri -Method ([System.Net.WebRequestMethods+Ftp]::DeleteFile) -Credentials $Credentials -UsePassive $UsePassive
+
+        $response = $request.GetResponse()
+        $response.Close()
+
+        Write-Host " • ✅ Removed file: `e[32m$removeUri`e[0m"
+        return [Result]::new($true)
+    }
+    catch {
+        Write-Host " • ⚠️ File removal failed for `e[33m$removeUri`e[0m"
+        return [Result]::new($_.Exception)
     }
 }
 
@@ -532,9 +582,7 @@ function Test-FtpConnectivity {
     param(
         [string]$FtpUri,
         [System.Net.NetworkCredential]$Credentials,
-        [bool]$UsePassive,
-        [ValidateSet('Directory', 'File')]
-        [string]$TestType = 'Directory'
+        [bool]$UsePassive = $true
     )
 
     Write-Host "`n🔌 Testing FTP connectivity..."
@@ -542,7 +590,6 @@ function Test-FtpConnectivity {
     # Extract base URI (server:port) and path separately
     $baseUri = $FtpUri -replace '/.*$', ''  # Remove path, keep just server:port
     $pathPart = $FtpUri -replace '^[^/]*/', '/'  # Extract just the path part
-
     # If no path specified, default to root
     if (-not $pathPart -or $pathPart -eq $FtpUri) {
         $pathPart = '/'
@@ -550,180 +597,59 @@ function Test-FtpConnectivity {
     }
 
     try {
-        # Test 1: Basic connection and authentication
-        Write-Host "   • Testing basic connection to `e[36mftp://$FtpUri`e[0m"
-        $listRequest = [System.Net.FtpWebRequest]::Create("ftp://$FtpUri")
-        $listRequest.Method = [System.Net.WebRequestMethods+Ftp]::ListDirectoryDetails
-        $listRequest.Credentials = $Credentials
-        $listRequest.UsePassive = $UsePassive
-        $listRequest.Timeout = 30000  # 30 seconds timeout
-
-        $listResponse = $listRequest.GetResponse()
-        Write-Host '   • ✅ Connection successful!'
-        Write-Host "   • FTP Status: `e[32m$($listResponse.StatusCode) - $($listResponse.StatusDescription.Trim())`e[0m"
-        Write-Host "   • Banner: `e[36m$($listResponse.BannerMessage.Trim())`e[0m"
-        Write-Host "   • Welcome: `e[36m$($listResponse.WelcomeMessage.Trim())`e[0m"
-
-        # Test 2: Try to list directory contents
-        $listStream = $listResponse.GetResponseStream()
-        $reader = New-Object System.IO.StreamReader($listStream)
-        $directoryListing = $reader.ReadToEnd()
-        $reader.Close()
-        $listResponse.Close()
-
-        if ($directoryListing) {
-            $lineCount = ($directoryListing -split "`n").Count
-            Write-Host "   • ✅ Directory listing successful ($lineCount entries)"
-        }
-        else {
-            Write-Host '   • ⚠️  Directory appears empty'
-        }
-
-        # Test 3: Try to create a test directory to check write permissions
-        Write-Host '   • Testing write permissions...'
-        $testDirName = "test_write_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
-        $testDirUri = "$FtpUri/$testDirName"
-
-        try {
-            $createRequest = [System.Net.FtpWebRequest]::Create("ftp://$testDirUri")
-            $createRequest.Method = [System.Net.WebRequestMethods+Ftp]::MakeDirectory
-            $createRequest.Credentials = $Credentials
-            $createRequest.UsePassive = $UsePassive
-            $createRequest.Timeout = 15000  # 15 seconds timeout
-
-            $createResponse = $createRequest.GetResponse()
-            $createResponse.Close()
-            Write-Host '   • ✅ Write permissions confirmed (test directory created)'
-
-            # Clean up test directory
-            try {
-                $deleteRequest = [System.Net.FtpWebRequest]::Create("ftp://$testDirUri")
-                $deleteRequest.Method = [System.Net.WebRequestMethods+Ftp]::RemoveDirectory
-                $deleteRequest.Credentials = $Credentials
-                $deleteRequest.UsePassive = $UsePassive
-                $deleteRequest.Timeout = 10000  # 10 seconds timeout
-
-                $deleteResponse = $deleteRequest.GetResponse()
-                $deleteResponse.Close()
-                Write-Host '   • ✅ Test directory cleaned up'
+        Write-Host " • Testing basic connection to `e[36m$FtpUri`e[0m"
+        $result = Read-FtpPath -BaseUri $baseUri -PathToRead $pathPart -Credentials $Credentials -UsePassive $UsePassive
+        if (-not $result.Success) {
+            Write-FtpErrorDetails -ErrorRecord $result.Exception -Context '[TEST] FTP connectivity and read' -AdditionalInfo @{
+                'Remote Path' = $FtpUri
             }
-            catch {
-                Write-Host "   • ⚠️  Could not clean up test directory: $($_.Exception.Message)"
-            }
-        }
-        catch {
-            Write-Host '   • ❌ Write permission test failed!'
-            Write-FtpErrorDetails -ErrorRecord $_ -Context 'Write permission test' -AdditionalInfo @{
-                'Test Directory URI' = "ftp://$testDirUri"
-                'Operation'          = 'Create test directory'
-            }
-            return $false
+            return  [Result]::new($result.Exception)
         }
 
-        return $true
+        $tempDir = "$pathPart/agx-ftp-test-temp"
+        $createDirResult = New-FtpDirectory -BaseUri $baseUri -DirectoryUri $tempDir -Credentials $Credentials -UsePassive $UsePassive
+        if (-not $createDirResult.Success) {
+            Write-FtpErrorDetails -ErrorRecord $createDirResult.Exception -Context '[TEST] Creating temp directory' -AdditionalInfo @{
+                'Remote Path' = $tempDir
+            }
+            return [Result]::new($createDirResult.Exception)
+        }
+
+        $deleteDirResult = Remove-FtpDirectory -BaseUri $baseUri -DirectoryUri $tempDir -Credentials $Credentials -UsePassive $UsePassive
+        if (-not $deleteDirResult.Success) {
+            Write-FtpErrorDetails -ErrorRecord $deleteDirResult.Exception -Context '[TEST] Deleting temp directory' -AdditionalInfo @{
+                'Remote Path' = $tempDir
+            }
+            return [Result]::new($deleteDirResult.Exception)
+        }
+
+        $tempFile = "$pathPart/agx-ftp-test.tmp"
+        $fileContent = "# FTP Test File`nCreated by AgX.FTPDeploy on $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`n"
+        $contentBytes = [System.Text.Encoding]::UTF8.GetBytes($fileContent)
+
+        $createFileResult = Upload-FtpFile -BaseUri $baseUri -FileUri "$tempFile" -FileContent $contentBytes -Credentials $Credentials -UsePassive $UsePassive
+        if (-not $createFileResult.Success) {
+            Write-FtpErrorDetails -ErrorRecord $createFileResult.Exception -Context '[TEST] Creating temp file' -AdditionalInfo @{
+                'Remote Path' = "$tempFile"
+            }
+            return [Result]::new($createFileResult.Exception)
+        }
+
+        $deleteFileResult = Remove-FtpFile -BaseUri $baseUri -FileUri $tempFile -Credentials $Credentials -UsePassive $UsePassive
+        if (-not $deleteFileResult.Success) {
+            Write-FtpErrorDetails -ErrorRecord $deleteFileResult.Exception -Context '[TEST] Deleting temp file' -AdditionalInfo @{
+                'Remote Path' = "$tempFile"
+            }
+            return [Result]::new($deleteFileResult.Exception)
+        }
     }
     catch {
-        $is550Error = $_.Exception.Message -like '*550*' -or ($_.Exception -is [System.Net.WebException] -and $_.Exception.Response -and $_.Exception.Response.StatusCode -eq [System.Net.FtpStatusCode]::ActionNotTakenFileUnavailable)
-
-        if ($is550Error -and $pathPart -and $pathPart -ne '/') {
-            if ($TestType -eq 'Directory') {
-                try {
-                    Write-Host "   • 📁 Target doesn't exist - Creating directory structure..."
-                    $pathSegments = $pathPart.Trim('/') -split '/'
-                    $currentPath = ''
-                    $baseUri = $FtpUri -replace '/.*$', ''  # Server:port only
-
-                    foreach ($segment in $pathSegments) {
-                        if ($segment) {
-                            $currentPath += '/' + $segment
-                            $createUri = "ftp://$baseUri$currentPath"
-
-                            try {
-                                $createRequest = [System.Net.FtpWebRequest]::Create($createUri)
-                                $createRequest.Method = [System.Net.WebRequestMethods+Ftp]::MakeDirectory
-                                $createRequest.Credentials = $Credentials
-                                $createRequest.UsePassive = $UsePassive
-                                $createRequest.Timeout = 15000
-
-                                $createResponse = $createRequest.GetResponse()
-                                $createResponse.Close()
-                                Write-Host "   • ✅ Created directory: `e[32m$currentPath`e[0m"
-                            }
-                            catch {
-                                # Directory might already exist, which is fine
-                                if ($_.Exception.Message -like '*550*' -and $_.Exception.Message -like '*exists*') {
-                                    Write-Host "     ℹ️  Directory already exists: `e[33m$currentPath`e[0m"
-                                }
-                                else {
-                                    Write-Host "     ⚠️  Could not create directory $currentPath`: $($_.Exception.Message)"
-                                    # Continue trying other segments
-                                }
-                            }
-                        }
-                    }
-
-                    # Test if we can now access the target directory
-                    try {
-                        $testRequest = [System.Net.FtpWebRequest]::Create("ftp://$FtpUri")
-                        $testRequest.Method = [System.Net.WebRequestMethods+Ftp]::ListDirectoryDetails
-                        $testRequest.Credentials = $Credentials
-                        $testRequest.UsePassive = $UsePassive
-                        $testRequest.Timeout = 15000
-
-                        $testResponse = $testRequest.GetResponse()
-                        $testResponse.Close()
-                        Write-Host '   • ✅ Directory is accessible!'
-                        return $true
-                    }
-                    catch {
-                        Write-Host "   • ❌ Directory creation completed but target still not accessible: $($_.Exception.Message)"
-                    }
-                }
-                catch {
-                    Write-Host "   • ❌ Directory creation failed: $($_.Exception.Message)"
-                }
-            }
-            elseif ($TestType -eq 'File') {
-                # Try to create as a file
-                Write-Host "   • 📄  Target doesn't exist - Creating as file..."
-                try {
-                    $fileContent = "# FTP Test File`nCreated by AgX.FTPDeploy on $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`n"
-                    $contentBytes = [System.Text.Encoding]::UTF8.GetBytes($fileContent)
-
-                    $uploadRequest = [System.Net.FtpWebRequest]::Create("ftp://$FtpUri")
-                    $uploadRequest.Method = [System.Net.WebRequestMethods+Ftp]::UploadFile
-                    $uploadRequest.Credentials = $Credentials
-                    $uploadRequest.UsePassive = $UsePassive
-                    $uploadRequest.ContentLength = $contentBytes.Length
-                    $uploadRequest.Timeout = 15000
-
-                    $requestStream = $uploadRequest.GetRequestStream()
-                    $requestStream.Write($contentBytes, 0, $contentBytes.Length)
-                    $requestStream.Close()
-
-                    $uploadResponse = $uploadRequest.GetResponse()
-                    $uploadResponse.Close()
-
-                    Write-Host "   • ✅ Created file: `e[32m$FtpUri`e[0m"
-                    return $true
-                }
-                catch {
-                    Write-Host "   • ❌ File creation failed: $($_.Exception.Message)"
-                }
-            }
-        }
-
-        # If we get here, all fallbacks failed - provide detailed error information
-        Write-FtpErrorDetails -ErrorRecord $_ -Context 'FTP connectivity test' -AdditionalInfo @{
-            'FTP URI'      = "ftp://$FtpUri"
-            'Operation'    = 'Basic connection and directory listing'
-            'Passive Mode' = $UsePassive
-            'Port'         = (($FtpUri -split ':')[1] -split '/')[0]
-            'Remote Path'  = $FtpUri
-        }
-
-        return $false
+        Write-Host " ❌ `e[31mFTP connectivity test failed: $($_.Exception.Message)`e[0m"
+        Write-FtpErrorDetails -ErrorRecord $_ -Context 'FTP connectivity test'
+        return [Result]::new($_.Exception)
     }
+
+    return [Result]::new($true)
 }
 
 # MAIN SCRIPT EXECUTION
@@ -742,7 +668,7 @@ Write-Host "`n🔄 Processing exclude patterns..."
 try {
     $excludeList = @()
     if (-not [string]::IsNullOrWhiteSpace($ExcludePatterns)) {
-        $excludeList = $ExcludePatterns -split ',' | ForEach-Object { $_.Trim() }
+        $excludeList = $ExcludePatterns -split ', ' | ForEach-Object { $_.Trim() }
     }
 }
 catch {
@@ -762,7 +688,7 @@ try {
     }
     $ftpUri = "${Server}:${Port}${encodedPath}"
     Write-Host "   • [CI] Source: `e[36m$DeployPath`e[0m"
-    Write-Host "   • [HOST] Destination: `e[36mftp://$ftpUri`e[0m"
+    Write-Host "   • [HOST] Destination: `e[36m$protocol$ftpUri`e[0m"
     if (-not (Test-Path -Path $DeployPath)) {
         Write-Host "   • ❌ `e[31mDeploy path does not exist!`e[0m"
         throw "Deploy path not found: $DeployPath"
@@ -773,79 +699,37 @@ try {
     $uploadCount = 0
     $skippedCount = 0
     $credentials = New-Object System.Net.NetworkCredential($Username, $Password)
-    $createdDirectories = @()     # Perform pre-flight connectivity and permissions test
-    $connectivityOk = $true
 
     if (-not $DisableConnectivityTests) {
-        if (-not [string]::IsNullOrWhiteSpace($TestFtpDirectory)) {
-            $testDirUri = "$ftpUri/$($TestFtpDirectory.TrimStart('/'))" -replace '//+', '/'
-            $dirConnectivityOk = Test-FtpConnectivity -FtpUri $testDirUri -Credentials $credentials -UsePassive $PassiveMode -TestType 'Directory'
-            $connectivityOk = $connectivityOk -and $dirConnectivityOk
-        }
-
-        if (-not [string]::IsNullOrWhiteSpace($TestFtpFile)) {
-            $testFileUri = "$ftpUri/$($TestFtpFile.TrimStart('/'))" -replace '//+', '/'
-            $fileConnectivityOk = Test-FtpConnectivity -FtpUri $testFileUri -Credentials $credentials -UsePassive $PassiveMode -TestType 'File'
-            $connectivityOk = $connectivityOk -and $fileConnectivityOk
-        }
-
-        if (-not $connectivityOk) {
-            Write-Host "❌ `e[31mFTP connectivity test failed. Deployment cannot proceed.`e[0m"
-            throw 'FTP connectivity test failed'
+        $connectivityResult = Test-FtpConnectivity -FtpUri $ftpUri -Credentials $credentials -UsePassive $PassiveMode
+        if (-not $connectivityResult.Success) {
+            throw "FTP connectivity test failed: $($connectivityResult.Exception.Message)"
         }
     }
 
     Write-Host "`n📤 Starting file upload process..."
     $sourceFiles | ForEach-Object {
-        try {
-            $currentFile = $_
-            $relativePath = $currentFile.FullName.Substring($DeployPath.Length).TrimStart('\', '/')
-            $relativePath = $relativePath -replace '\\', '/'
-            if (Test-ExcludeFile -FilePath $relativePath -Patterns $excludeList) {
-                $skippedCount++
-                return
-            }
-            Write-Host "   • Uploading file: `e[36m$relativePath`e[0m"
-            # Ensure parent directories exist
-            $pathParts = $relativePath -split '/'
-            if ($pathParts.Length -gt 1) {
-                $currentPath = ''
-                for ($i = 0; $i -lt ($pathParts.Length - 1); $i++) {
-                    $currentPath = if ($currentPath -eq '') { $pathParts[$i] } else { "$currentPath/$pathParts[$i]" }
-                    # Construct directory URI properly - maintain proper FTP URI format
-                    $dirUri = "$ftpUri/$currentPath" -replace '/+', '/'
-
-                    if ($createdDirectories -notcontains $currentPath) {
-                        $null = Create-FtpDirectory -DirectoryUri $dirUri -Credentials $credentials -UsePassive $PassiveMode
-                        $createdDirectories += $currentPath
-                    }
-                }
-            }
-
-            $remoteFileUri = "$ftpUri/$relativePath" -replace '/+', '/'
-            $request = [System.Net.FtpWebRequest]::Create("ftp://$remoteFileUri")
-            $request.Method = [System.Net.WebRequestMethods+Ftp]::UploadFile
-            $request.Credentials = $credentials
-            $request.UsePassive = $PassiveMode
-            $fileContent = [System.IO.File]::ReadAllBytes($currentFile.FullName)
-            $request.ContentLength = $fileContent.Length
-            $requestStream = $request.GetRequestStream()
-            $requestStream.Write($fileContent, 0, $fileContent.Length)
-            $requestStream.Close()
-            $response = $request.GetResponse()
-            $response.Close()
-            $uploadCount++
+        $currentFile = $_
+        $relativePath = $currentFile.FullName.Substring($DeployPath.Length).TrimStart('\', '/')
+        $relativePath = $relativePath -replace '\\', '/'
+        if ((Test-FileMatchesPatterns -FilePath $relativePath -Patterns $excludeList).Success) {
+            $skippedCount++
+            return
         }
-        catch {
-            Write-FtpErrorDetails -ErrorRecord $_ -Context 'File upload operation' -AdditionalInfo @{
-                'File'          = $currentFile.Name
-                'Local path'    = $currentFile.FullName
-                'Remote URI'    = "ftp://$remoteFileUri"
-                'File size'     = "$($fileContent.Length) bytes"
-                'Relative path' = $relativePath
+        Write-Host "   • Uploading file: `e[36m$relativePath`e[0m"
+
+        $uploadResult = Upload-FtpFile -BaseUri $ftpUri -FileUri $relativePath -FileContent ([System.IO.File]::ReadAllBytes($currentFile.FullName)) -Credentials $credentials -UsePassive $PassiveMode
+        if (-not $uploadResult.Success) {
+            Write-FtpErrorDetails -ErrorRecord $uploadResult.Exception -Context 'File upload' -AdditionalInfo @{
+                'File'       = $currentFile.Name
+                'Local path' = $currentFile.FullName
+                'Remote URI' = New-FtpUri -BaseUri $ftpUri -Path $relativePath
+                'File size'  = "$($currentFile.Length) bytes"
             }
-            throw
+            throw "Failed to upload file: $($currentFile.FullName)"
         }
+
+        $uploadCount++
     }
 
     $cleanupCount = 0
@@ -853,7 +737,7 @@ try {
         Write-Host '🧹 Starting cleanup of old files...'
         $preserveList = @()
         if (-not [string]::IsNullOrWhiteSpace($PreservePatterns)) {
-            $preserveList = $PreservePatterns -split ',' | ForEach-Object { $_.Trim() }
+            $preserveList = $PreservePatterns -split ', ' | ForEach-Object { $_.Trim() }
             Write-Host "   • Preserve patterns: `e[36m$($preserveList -join ', ')`e[0m"
         }
 
@@ -863,110 +747,92 @@ try {
                 $relativePath = $_.FullName.Substring($DeployPath.Length).TrimStart('\', '/')
                 $relativePath = $relativePath -replace '\\', '/'
 
-                if (-not (Test-ExcludeFile -FilePath $relativePath -Patterns $excludeList)) {
+                if (-not (Test-FileMatchesPatterns -FilePath $relativePath -Patterns $excludeList).Success) {
                     $uploadedFiles += $relativePath
                 }
             }
 
-            try {
-                Write-Host '   • 🔍 Scanning remote server for all files (including subdirectories)...'
-                $remoteStructure = Get-FtpFilesRecursive -FtpBaseUri $ftpUri -CurrentPath '' -Credentials $credentials -UsePassive $PassiveMode
+            Write-Host ' • 🔍 Scanning remote server for all files (including subdirectories)...'
+            $result = Read-FtpFilesRecursive -BaseUri $ftpUri -Path '' -Credentials $credentials -UsePassive $PassiveMode
+            if (-not $result.Success) {
+                Write-FtpErrorDetails -ErrorRecord $result.Exception -Context 'Listing remote files for cleanup' -AdditionalInfo @{
+                    'FTP URI' = $ftpUri
+                }
+                throw "Failed to list remote files: $($result.Exception.Message)"
+            }
+            $remoteStructure = $result.Value
 
-                if ($remoteStructure) {
-                    $existingFiles = $remoteStructure.Files
-                    $existingDirectories = $remoteStructure.Directories
+            if ($remoteStructure) {
+                $existingFiles = $remoteStructure.Files
+                $existingDirectories = $remoteStructure.Directories
 
-                    Write-Host "   • Found `e[36m$($existingFiles.Count)`e[0m files and `e[36m$($existingDirectories.Count)`e[0m directories on server"
+                Write-Host "   • Found `e[36m$($existingFiles.Count)`e[0m files and `e[36m$($existingDirectories.Count)`e[0m directories on server"
 
-                    # Find files to delete (exist on server but not in current deployment)
-                    $filesToDelete = @()
-                    foreach ($existingFile in $existingFiles) {
-                        if ($uploadedFiles -notcontains $existingFile) {
-                            if (Test-PreserveFile -FilePath $existingFile -Patterns $preserveList) {
-                                Write-Host "   • 🔒 Preserved: `e[32m$existingFile`e[0m (matches preserve pattern)"
-                            }
-                            else {
-                                $filesToDelete += $existingFile
-                            }
+                # Find files to delete (exist on server but not in current deployment)
+                $filesToDelete = @()
+                foreach ($existingFile in $existingFiles) {
+                    if ($uploadedFiles -notcontains $existingFile) {
+                        if ((Test-FileMatchesPatterns -FilePath $existingFile -Patterns $preserveList).Success) {
+                            Write-Host "   • 🔒 Preserved: `e[32m$existingFile`e[0m (matches preserve pattern)"
                         }
-                    }
-
-                    # Delete old files
-                    foreach ($fileToDelete in $filesToDelete) {
-                        $deleteUri = "$ftpUri/$fileToDelete" -replace '/+', '/'
-
-                        try {
-                            $deleteRequest = [System.Net.FtpWebRequest]::Create("ftp://$deleteUri")
-                            $deleteRequest.Method = [System.Net.WebRequestMethods+Ftp]::DeleteFile
-                            $deleteRequest.Credentials = $credentials
-                            $deleteRequest.UsePassive = $PassiveMode
-
-                            $deleteResponse = $deleteRequest.GetResponse()
-                            $deleteResponse.Close()
-
-                            Write-Host "   • 🗑️  Deleted: `e[31m$fileToDelete`e[0m"
-                            $cleanupCount++
+                        else {
+                            $filesToDelete += $existingFile
                         }
-                        catch {
-                            Write-Host "   • ⚠️  Could not delete `e[33m$fileToDelete`e[0m: $($_.Exception.Message)"
-                        }
-                    }
-
-                    # Find and delete empty directories (in reverse order to handle nested directories)
-                    $uploadedDirectories = @()
-                    Get-ChildItem -Path $DeployPath -Recurse -Directory | ForEach-Object {
-                        $relativePath = $_.FullName.Substring($DeployPath.Length).TrimStart('\', '/')
-                        $relativePath = $relativePath -replace '\\', '/'
-                        $uploadedDirectories += $relativePath
-                    }
-
-                    $directoriesToDelete = @()
-                    foreach ($existingDir in $existingDirectories) {
-                        if ($uploadedDirectories -notcontains $existingDir) {
-                            $directoriesToDelete += $existingDir
-                        }
-                    }
-
-                    # Sort directories by depth (deepest first) to avoid deletion conflicts
-                    $directoriesToDelete = $directoriesToDelete | Sort-Object { ($_ -split '/').Count } -Descending
-
-                    foreach ($dirToDelete in $directoriesToDelete) {
-                        $deleteUri = "$ftpUri/$dirToDelete" -replace '/+', '/'
-
-                        try {
-                            $deleteRequest = [System.Net.FtpWebRequest]::Create("ftp://$deleteUri")
-                            $deleteRequest.Method = [System.Net.WebRequestMethods+Ftp]::RemoveDirectory
-                            $deleteRequest.Credentials = $credentials
-                            $deleteRequest.UsePassive = $PassiveMode
-
-                            $deleteResponse = $deleteRequest.GetResponse()
-                            $deleteResponse.Close()
-
-                            Write-Host "   • 📁🗑️  Deleted directory: `e[31m$dirToDelete`e[0m"
-                            $cleanupCount++
-                        }
-                        catch {
-                            Write-Host "   • ⚠️  Could not delete directory `e[33m$dirToDelete`e[0m: $($_.Exception.Message)"
-                        }
-                    }
-
-                    if ($filesToDelete.Count -eq 0 -and $directoriesToDelete.Count -eq 0) {
-                        Write-Host '   • ✅ No old files or directories to cleanup'
                     }
                 }
-                else {
-                    Write-Host '   • ⚠️  Could not retrieve remote server structure for cleanup'
+
+                # Delete old files
+                foreach ($fileToDelete in $filesToDelete) {
+                    $deleteResult = Remove-FtpFile -BaseUri $ftpUri -FileUri $fileToDelete -Credentials $credentials -UsePassive $PassiveMode
+                    if (-not $deleteResult.Success) {
+                        Write-FtpErrorDetails -ErrorRecord $deleteResult.Exception -Context 'File deletion' -AdditionalInfo @{
+                            'File path' = $filesToDelete
+                        }
+                        throw "Failed to delete file: $fileToDelete"
+                    }
+                    $cleanupCount++
                 }
 
-            }
-            catch {
-                Write-Host "   • ⚠️  `e[33mCould not list server files for cleanup:`e[0m $($_.Exception.Message)"
-            }
+                # Find and delete empty directories (in reverse order to handle nested directories)
+                $uploadedDirectories = @()
+                Get-ChildItem -Path $DeployPath -Recurse -Directory | ForEach-Object {
+                    $relativePath = $_.FullName.Substring($DeployPath.Length).TrimStart('\', '/')
+                    $relativePath = $relativePath -replace '\\', '/'
+                    $uploadedDirectories += $relativePath
+                }
 
+                $directoriesToDelete = @()
+                foreach ($existingDir in $existingDirectories) {
+                    if ($uploadedDirectories -notcontains $existingDir) {
+                        $directoriesToDelete += $existingDir
+                    }
+                }
+
+                # Sort directories by depth (deepest first) to avoid deletion conflicts
+                $directoriesToDelete = $directoriesToDelete | Sort-Object { ($_ -split '/').Count } -Descending
+
+                foreach ($dirToDelete in $directoriesToDelete) {
+                    $deleteResult = Remove-FtpDirectory -BaseUri $ftpUri -DirectoryUri $dirToDelete -Credentials $credentials -UsePassive $PassiveMode
+                    if (-not $deleteResult.Success) {
+                        Write-FtpErrorDetails -ErrorRecord $deleteResult.Exception -Context 'Directory deletion' -AdditionalInfo @{
+                            'Directory path' = $dirToDelete
+                        }
+                        throw "Failed to delete directory: $dirToDelete"
+                    }
+                    $cleanupCount++
+                }
+
+                if ($filesToDelete.Count -eq 0 -and $directoriesToDelete.Count -eq 0) {
+                    Write-Host ' • ✅ No old files or directories to cleanup'
+                }
+            }
+            else {
+                Write-Host ' • ⚠️ Could not retrieve remote server structure for cleanup'
+            }
         }
         catch {
             Write-Host "   • ⚠️  `e[33mCleanup failed:`e[0m $($_.Exception.Message)"
-            Write-Host '   • 📤 Deployment was successful, cleanup failed.'
+            Write-Host ' • 📤 Deployment was successful, cleanup failed.'
         }
     }
 
