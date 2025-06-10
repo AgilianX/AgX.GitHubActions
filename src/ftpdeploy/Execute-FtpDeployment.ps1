@@ -403,7 +403,7 @@ function Read-FtpFilesRecursive {
 
     $result = Read-FtpPath -BaseUri $currentUri -PathToRead '' -Credentials $Credentials -UsePassive $UsePassive
     if (-not $result.Success) {
-        return [Result]::new($result.Exception)
+        return $result
     }
 
     $details = $result.Value
@@ -432,7 +432,7 @@ function Read-FtpFilesRecursive {
                                 $directories += $subResults.Value.Directories
                             }
                             else {
-                                return [Result]::new($subResults.Exception)
+                                return $subResults
                             }
                         }
                         else {
@@ -530,7 +530,7 @@ function Upload-FtpFile {
             # Create directory structure recursively (New-FtpDirectory handles this)
             $createDirResult = New-FtpDirectory -BaseUri $BaseUri -DirectoryUri $directoryPath -Credentials $Credentials -UsePassive $UsePassive
             if (-not $createDirResult.Success) {
-                return [Result]::new($createDirResult.Exception)
+                return $createDirResult.Exception
             }
         }
         # Upload the file
@@ -603,7 +603,7 @@ function Test-FtpConnectivity {
             Write-FtpErrorDetails -ErrorRecord $result.Exception -Context '[TEST] FTP connectivity and read' -AdditionalInfo @{
                 'Remote Path' = $FtpUri
             }
-            return  [Result]::new($result.Exception)
+            return $result
         }
 
         $tempDir = "$pathPart/agx-ftp-test-temp"
@@ -612,7 +612,7 @@ function Test-FtpConnectivity {
             Write-FtpErrorDetails -ErrorRecord $createDirResult.Exception -Context '[TEST] Creating temp directory' -AdditionalInfo @{
                 'Remote Path' = $tempDir
             }
-            return [Result]::new($createDirResult.Exception)
+            return $createDirResult
         }
 
         $deleteDirResult = Remove-FtpDirectory -BaseUri $baseUri -DirectoryUri $tempDir -Credentials $Credentials -UsePassive $UsePassive
@@ -620,7 +620,7 @@ function Test-FtpConnectivity {
             Write-FtpErrorDetails -ErrorRecord $deleteDirResult.Exception -Context '[TEST] Deleting temp directory' -AdditionalInfo @{
                 'Remote Path' = $tempDir
             }
-            return [Result]::new($deleteDirResult.Exception)
+            return $deleteDirResult
         }
 
         $tempFile = "$pathPart/agx-ftp-test.tmp"
@@ -632,7 +632,7 @@ function Test-FtpConnectivity {
             Write-FtpErrorDetails -ErrorRecord $createFileResult.Exception -Context '[TEST] Creating temp file' -AdditionalInfo @{
                 'Remote Path' = "$tempFile"
             }
-            return [Result]::new($createFileResult.Exception)
+            return $createFileResult
         }
 
         $deleteFileResult = Remove-FtpFile -BaseUri $baseUri -FileUri $tempFile -Credentials $Credentials -UsePassive $UsePassive
@@ -640,7 +640,7 @@ function Test-FtpConnectivity {
             Write-FtpErrorDetails -ErrorRecord $deleteFileResult.Exception -Context '[TEST] Deleting temp file' -AdditionalInfo @{
                 'Remote Path' = "$tempFile"
             }
-            return [Result]::new($deleteFileResult.Exception)
+            return $deleteFileResult
         }
     }
     catch {
