@@ -55,6 +55,11 @@ inputs:
     description: "Disable FTP connectivity tests (directory and file creation). Use with caution!"
     default: false
     required: false
+  enable-diff-upload:
+    type: boolean
+    description: "Enable differential upload to only upload changed files (compares file sizes)"
+    default: true
+    required: false
 
 runs:
   using: "composite"
@@ -183,6 +188,7 @@ runs:
             CleanTarget = if ("${{ inputs.clean-target }}" -eq "true") { $true } else { $false }
             PreservePatterns = "${{ inputs.preserve-patterns }}"
             DisableConnectivityTests = if ("${{ inputs.disable-connectivity-tests }}" -eq "true") { $true } else { $false }
+            EnableDiffUpload = if ("${{ inputs.enable-diff-upload }}" -eq "true") { $true } else { $false }
         }
 
         & $scriptPath @params

@@ -28,6 +28,7 @@ This reusable GitHub Action deploys files to a server using FTP protocol. It sup
 | clean-target        | Clean up old files on server that are not part of the new deployment                        | No (defaults to `false`)   |
 | preserve-patterns   | File patterns to preserve during cleanup (comma-separated, e.g., '*.db,logs/*,config.json') | No                         |
 | disable-connectivity-tests | Disable FTP connectivity tests (directory and file creation). Use with caution!        | No (defaults to `false`)   |
+| enable-diff-upload  | Enable differential upload to only upload changed files (compares file sizes)                | No (defaults to `true`)    |
 
 ## Implementation
 
@@ -39,9 +40,56 @@ The implementation includes:
 - **FTP Protocol**: Standard File Transfer Protocol support
 - **Directory Management**: Automatic creation of remote directories as needed
 - **File Exclusions**: Pattern-based file filtering during upload
+- **Differential Upload**: Size-based comparison to upload only changed files (enabled by default)
 - **Cleanup Functionality**: Comprehensive cleanup of old files with recursive directory support
 - **Error Handling**: Structured error handling with Result pattern for consistent operation success/failure tracking
 - **Connectivity Testing**: Built-in temporary file/directory testing to validate server access and permissions
+
+## Differential Upload
+
+> [!TIP]
+> **Enabled by Default**: Differential upload is enabled by default to optimize deployment performance automatically.
+
+The action includes intelligent differential upload functionality that dramatically reduces deployment time by uploading only files that have changed:
+
+### Process Overview
+
+1. **Size Comparison**: Before uploading each file, checks the remote file size using FTP `GetFileSize` command
+2. **Smart Decision**: Only uploads if:
+   - Remote file doesn't exist
+   - Remote file size differs from local file size
+3. **Fast Operation**: Uses lightweight metadata requests, no file downloads
+4. **Graceful Fallback**: If size check fails, uploads the file for safety
+
+### Benefits
+
+- **Faster Deployments**: Dramatically reduced upload time for incremental changes
+- **Bandwidth Efficient**: Minimal network overhead for file comparisons
+- **CI/CD Optimized**: Works reliably with fresh builds and GitHub Actions environment
+- **Safe**: Conservative approach ensures files are uploaded when in doubt
+
+### Configuration
+
+```yaml
+# Differential upload enabled (default)
+- name: Deploy with FTP (fast incremental)
+  uses: AgilianX/AgX.GitHubActions/src/ftpdeploy@master
+  with:
+    # enable-diff-upload: true (default, can be omitted)
+
+# Force full upload (disable differential)
+- name: Deploy with FTP (force full upload)
+  uses: AgilianX/AgX.GitHubActions/src/ftpdeploy@master
+  with:
+    enable-diff-upload: false
+```
+
+### Why Size-Only Comparison?
+
+- **Timestamp Issues**: File timestamps change during CI/CD builds even for identical content
+- **Hash Overhead**: Downloading files for hash comparison would negate performance benefits
+- **High Accuracy**: File size changes are extremely common when content changes
+- **Performance**: Single metadata request per file check
 
 ## FTP Connectivity Testing
 

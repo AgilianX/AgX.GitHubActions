@@ -43,7 +43,10 @@ param(
     [string]$PreservePatterns = '',
 
     [Parameter(Mandatory = $false)]
-    [bool]$DisableConnectivityTests = $false
+    [bool]$DisableConnectivityTests = $false,
+
+    [Parameter(Mandatory = $false)]
+    [bool]$EnableDiffUpload = $true
 )
 
 $protocol = 'ftp://'
@@ -358,36 +361,36 @@ function Write-FtpErrorDetails {
     Write-Host "`n🔧 Troubleshooting Suggestions:"
     if ($Context -like '*connectivity*' -or $Context -like '*connection*') {
         Write-Host '   📞 Connection Issues:'
-        Write-Host '   • Verify server hostname/IP address is correct'
-        Write-Host "   • Check if FTP port ($(if ($AdditionalInfo['Port']) { $AdditionalInfo['Port'] } else { '21' })) is open"
-        Write-Host "   • Confirm passive mode setting ($(if ($AdditionalInfo['Passive Mode']) { $AdditionalInfo['Passive Mode'] } else { 'Unknown' }))"
-        Write-Host '   • Test with FTP client (FileZilla, WinSCP) manually'
-        Write-Host '   • Check firewall rules on both client and server'
+        Write-Host '     • Verify server hostname/IP address is correct'
+        Write-Host "     • Check if FTP port ($(if ($AdditionalInfo['Port']) { $AdditionalInfo['Port'] } else { '21' })) is open"
+        Write-Host "     • Confirm passive mode setting ($(if ($AdditionalInfo['Passive Mode']) { $AdditionalInfo['Passive Mode'] } else { 'Unknown' }))"
+        Write-Host '     • Test with FTP client (FileZilla, WinSCP) manually'
+        Write-Host '     • Check firewall rules on both client and server'
     }
 
     if ($ErrorRecord.Exception.Message -like '*550*' -or ($ErrorRecord.Exception -is [System.Net.WebException] -and $ErrorRecord.Exception.Response -and $ErrorRecord.Exception.Response.StatusCode -eq [System.Net.FtpStatusCode]::ActionNotTakenFileUnavailable)) {
         Write-Host '   📁 File/Directory Access Issues (550):'
-        Write-Host "   • Verify the remote path exists: '$(if ($AdditionalInfo['Remote Path']) { $AdditionalInfo['Remote Path'] } elseif ($AdditionalInfo['Remote URI']) { $AdditionalInfo['Remote URI'] } else { 'Unknown' })'"
-        Write-Host '   • Check user permissions for the target directory'
-        Write-Host '   • Ensure parent directories exist'
-        Write-Host '   • Verify path syntax (forward slashes for FTP)'
-        Write-Host '   • Try connecting to parent directory first'
+        Write-Host "     • Verify the remote path exists: '$(if ($AdditionalInfo['Remote Path']) { $AdditionalInfo['Remote Path'] } elseif ($AdditionalInfo['Remote URI']) { $AdditionalInfo['Remote URI'] } else { 'Unknown' })'"
+        Write-Host '     • Check user permissions for the target directory'
+        Write-Host '     • Ensure parent directories exist'
+        Write-Host '     • Verify path syntax (forward slashes for FTP)'
+        Write-Host '     • Try connecting to parent directory first'
     }
 
     if ($Context -like '*upload*' -or $Context -like '*file*') {
         Write-Host '   📤 File Upload Issues:'
-        Write-Host '   • Check available disk space on server'
-        Write-Host "   • Verify file isn't locked or in use"
-        Write-Host "   • Confirm filename doesn't contain invalid characters"
-        Write-Host '   • Try uploading a smaller test file first'
+        Write-Host '     • Check available disk space on server'
+        Write-Host "     • Verify file isn't locked or in use"
+        Write-Host "     • Confirm filename doesn't contain invalid characters"
+        Write-Host '     • Try uploading a smaller test file first'
     }
 
     if ($ErrorRecord.Exception.Message -like '*authentication*' -or $ErrorRecord.Exception.Message -like '*530*') {
         Write-Host '   🔐 Authentication Issues:'
-        Write-Host '   • Verify username and password are correct'
-        Write-Host '   • Check if account is locked or expired'
-        Write-Host '   • Confirm user has FTP access permissions'
-        Write-Host '   • Test credentials with FTP client manually'
+        Write-Host '     • Verify username and password are correct'
+        Write-Host '     • Check if account is locked or expired'
+        Write-Host '     • Confirm user has FTP access permissions'
+        Write-Host '     • Test credentials with FTP client manually'
     }
 
     Write-Host '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
@@ -695,6 +698,59 @@ function Test-FtpConnectivity {
     return [Result]::Success()
 }
 
+# DIFFERENTIAL UPLOAD FUNCTIONS
+
+function Get-RemoteFileSize {
+    param(
+        [string]$BaseUri,
+        [string]$FileUri,
+        [System.Net.NetworkCredential]$Credentials,
+        [bool]$UsePassive
+    )
+
+    try {
+        $ftpUri = New-FtpUri -BaseUri $BaseUri -Path $FileUri
+        $request = New-FtpRequest -Uri $ftpUri -Method ([System.Net.WebRequestMethods+Ftp]::GetFileSize) -Credentials $Credentials -UsePassive $UsePassive
+        $response = $request.GetResponse()
+        $size = $response.ContentLength
+        $response.Close()
+
+        return [Result]::Success($size)
+    }
+    catch {
+        # File doesn't exist or can't be accessed
+        return [Result]::Fail($_.Exception)
+    }
+}
+
+function Test-FileNeedsUpload {
+    param(
+        [System.IO.FileInfo]$LocalFile,
+        [string]$BaseUri,
+        [string]$FileUri,
+        [System.Net.NetworkCredential]$Credentials,
+        [bool]$UsePassive
+    )
+
+    $remoteSizeResult = Get-RemoteFileSize -BaseUri $BaseUri -FileUri $FileUri -Credentials $Credentials -UsePassive $UsePassive
+
+    # If we can't get remote file size, assume upload is needed (file doesn't exist or error)
+    if (-not $remoteSizeResult.Success) {
+        return [Result]::Success($true)
+    }
+
+    $remoteSize = $remoteSizeResult.Value
+    $localSize = $LocalFile.Length
+
+    # If sizes differ, upload is needed
+    if ($localSize -ne $remoteSize) {
+        return [Result]::Success($true)
+    }
+
+    # Sizes match, no upload needed
+    return [Result]::Success($false)
+}
+
 # MAIN SCRIPT EXECUTION
 
 Write-Host "🔧 `e[32mStarting FTP deployment...`e[0m"
@@ -706,6 +762,7 @@ Write-Host "   • Passive Mode: `e[36m$PassiveMode`e[0m"
 Write-Host "   • Clean Target: `e[36m$CleanTarget`e[0m"
 Write-Host "   • Exclude Patterns: `e[36m$ExcludePatterns`e[0m"
 Write-Host "   • Preserve Patterns: `e[36m$PreservePatterns`e[0m"
+Write-Host "   • Enable Diff Upload: `e[36m$EnableDiffUpload`e[0m"
 
 Write-Host "`n🔄 Processing exclude patterns..."
 try {
@@ -751,13 +808,26 @@ try {
     }
 
     Write-Host "`n📤 Starting file upload process..."
+    $differentialSkippedCount = 0
     $sourceFiles | ForEach-Object {
         $currentFile = $_
         $relativePath = $currentFile.FullName.Substring($DeployPath.Length).TrimStart('\', '/')
         $relativePath = $relativePath -replace '\\', '/'
+
+        # Skip files matching exclude patterns
         if ((Test-FileMatchesPatterns -FilePath $relativePath -Patterns $excludeList).Success) {
             $skippedCount++
             return
+        }
+
+        # Check if differential upload is enabled and file needs upload
+        if ($EnableDiffUpload) {
+            $uploadCheckResult = Test-FileNeedsUpload -LocalFile $currentFile -BaseUri $ftpUri -FileUri $relativePath -Credentials $credentials -UsePassive $PassiveMode
+
+            if ($uploadCheckResult.Success -and -not $uploadCheckResult.Value) {
+                $differentialSkippedCount++
+                return
+            }
         }
 
         $uploadResult = Upload-FtpFile -BaseUri $ftpUri -FileUri $relativePath -FileContent ([System.IO.File]::ReadAllBytes($currentFile.FullName)) -Credentials $credentials -UsePassive $PassiveMode
@@ -881,7 +951,10 @@ try {
     Write-Host "🎉 `e[32mFTP deployment completed successfully!`e[0m"
     Write-Host "   • Files uploaded: `e[32m$uploadCount`e[0m"
     if ($skippedCount -gt 0) {
-        Write-Host "   • Files skipped: `e[33m$skippedCount`e[0m"
+        Write-Host "   • Files skipped (excluded): `e[33m$skippedCount`e[0m"
+    }
+    if ($EnableDiffUpload -and $differentialSkippedCount -gt 0) {
+        Write-Host "   • Files skipped (unchanged): `e[36m$differentialSkippedCount`e[0m"
     }
     if ($cleanupCount -gt 0) {
         Write-Host "   • Files cleaned up: `e[31m$cleanupCount`e[0m"
