@@ -514,12 +514,17 @@ function New-FtpDirectory {
                 Write-Host " • ✅ Created directory: `e[32m$currentPath`e[0m"
             }
             catch {
-                # Directory might already exist, which is fine
-                if ($_.Exception.Message -like '*550*' -and $_.Exception.Message -like '*exists*') {
-                    return [Result]::Success()
+                # Check if this is a "directory already exists" error by using Read-FtpPath
+                # This is more reliable than parsing error messages which vary between FTP servers
+                $testResult = Read-FtpPath -BaseUri $BaseUri -PathToRead $currentPath -Credentials $Credentials -UsePassive $UsePassive
+                if ($testResult.Success) {
+                    # If we can read the directory, it exists - that's fine
+                    Write-Host " • ℹ️ Directory already exists: `e[36m$currentPath`e[0m"
                 }
                 else {
+                    # If we can't read it either, then there's a real problem
                     Write-Host " • ⚠️ Directory creation failed for `e[33m$createUri`e[0m"
+                    Write-Host " • ⚠️ Creation error: $($_.Exception.Message)"
                     return [Result]::Fail($_.Exception)
                 }
             }
@@ -567,11 +572,10 @@ function Upload-FtpFile {
         if ($pathSegments.Count -gt 1) {
             # Extract directory path (all segments except the last one)
             $directoryPath = ($pathSegments[0..($pathSegments.Count - 2)]) -join '/'
-
             # Create directory structure recursively (New-FtpDirectory handles this)
             $createDirResult = New-FtpDirectory -BaseUri $BaseUri -DirectoryUri $directoryPath -Credentials $Credentials -UsePassive $UsePassive
             if (-not $createDirResult.Success) {
-                return $createDirResult.Exception
+                return $createDirResult
             }
         }
         # Upload the file
@@ -645,7 +649,6 @@ function Test-FtpConnectivity {
             }
             return $result
         }
-
         $tempDir = "$pathPart/agx-ftp-test-temp"
         $createDirResult = New-FtpDirectory -BaseUri $baseUri -DirectoryUri $tempDir -Credentials $Credentials -UsePassive $UsePassive
         if (-not $createDirResult.Success) {
@@ -654,7 +657,6 @@ function Test-FtpConnectivity {
             }
             return $createDirResult
         }
-
         $deleteDirResult = Remove-FtpDirectory -BaseUri $baseUri -DirectoryUri $tempDir -Credentials $Credentials -UsePassive $UsePassive
         if (-not $deleteDirResult.Success) {
             Write-FtpErrorDetails -ErrorSource $deleteDirResult.Exception -Context '[TEST] Deleting temp directory' -AdditionalInfo @{
