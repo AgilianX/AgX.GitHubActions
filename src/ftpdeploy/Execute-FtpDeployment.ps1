@@ -589,7 +589,7 @@ function Upload-FtpFile {
 
         $response = $request.GetResponse()
         $response.Close()
-        Write-Host " • ✅ Uploaded file: `e[32m$uploadUri`e[0m"
+        Write-Host " • ✅ Uploaded file [$($FileContent.Length) bytes]: `e[32m$uploadUri`e[0m"
         return [Result]::Success()
     }
     catch {
