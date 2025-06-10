@@ -27,9 +27,7 @@ This reusable GitHub Action deploys files to a server using FTP protocol. It sup
 | exclude-patterns    | File patterns to exclude from upload (comma-separated, e.g., '*.log,temp/*')                | No                         |
 | clean-target        | Clean up old files on server that are not part of the new deployment                        | No (defaults to `false`)   |
 | preserve-patterns   | File patterns to preserve during cleanup (comma-separated, e.g., '*.db,logs/*,config.json') | No                         |
-| test-ftp-directory  | Test FTP connectivity by creating a directory path (relative to remote-path)                | No (defaults to `agx.test-ftp-dir`) |
-| test-ftp-file       | Test FTP connectivity by creating a test file (relative to remote-path)                     | No (defaults to `agx.test-ftp-file.tmp`) |
-| disable-connectivity-tests | Disable FTP connectivity tests (directory and file tests)                              | No (defaults to `false`)   |
+| disable-connectivity-tests | Disable FTP connectivity tests (directory and file creation). Use with caution!        | No (defaults to `false`)   |
 
 ## Implementation
 
@@ -42,52 +40,42 @@ The implementation includes:
 - **Directory Management**: Automatic creation of remote directories as needed
 - **File Exclusions**: Pattern-based file filtering during upload
 - **Cleanup Functionality**: Comprehensive cleanup of old files with recursive directory support
-- **Error Handling**: Detailed error reporting and logging
+- **Error Handling**: Structured error handling with Result pattern for consistent operation success/failure tracking
+- **Connectivity Testing**: Built-in temporary file/directory testing to validate server access and permissions
 
 ## FTP Connectivity Testing
 
 The action includes built-in FTP connectivity testing to ensure the target server and paths are accessible before attempting deployment:
 
-### Test Types
+### How It Works
 
-- **Directory Test** (`test-ftp-directory`): Tests connectivity by attempting to access or create a directory
-- **File Test** (`test-ftp-file`): Tests connectivity by attempting to create a test file
+The connectivity test automatically performs the following operations:
+
+1. **Read Test**: Attempts to list the contents of the target remote directory
+2. **Directory Creation Test**: Creates a temporary directory (`agx-ftp-test-temp`) and immediately removes it
+3. **File Upload Test**: Creates a temporary test file (`agx-ftp-test.tmp`) and immediately removes it
 
 > [!NOTE]
-> **Automatic Creation**: If a test path doesn't exist, the action will attempt to create it. This helps resolve common "550 File unavailable" errors when deploying to new or non-existent remote paths.
+> **Automatic Testing**: The action uses a standardized temporary file/directory approach to validate connectivity, permissions, and write access to the target path.
 
 ### Default Behavior
 
-By default, the action performs both tests using these paths:
+By default, connectivity testing is enabled and uses temporary resources that are automatically cleaned up:
 
-- **Directory**: `agx.test-ftp-dir` (relative to `remote-path`)
-- **File**: `agx.test-ftp-file.tmp` (relative to `remote-path`)
-
-### Customization
-
-> [!TIP]
-> You can customize the test paths or disable specific tests:
-
-```yaml
-- name: Deploy with custom FTP tests
-  uses: AgilianX/AgX.GitHubActions/src/ftpdeploy@master
-  with:
-    ... # other parameters
-    test-ftp-directory: "connectivity-test/dir"  # Tests /mysite/connectivity-test/dir
-    test-ftp-file: "temp/test-upload.tmp"        # Tests /mysite/temp/test-upload.tmp
-```
+- **Temporary Directory**: `agx-ftp-test-temp/` (relative to `remote-path`)
+- **Temporary File**: `agx-ftp-test.tmp` (relative to `remote-path`)
 
 ### Disabling Tests
 
 > [!TIP]
-> You can disable tests:
+> You can disable connectivity tests if needed:
 
 ```yaml
 - name: Deploy with FTP (disable tests)
   uses: AgilianX/AgX.GitHubActions/src/ftpdeploy@master
   with:
     ... # other parameters
-    disable-connectivity-tests: "true"
+    disable-connectivity-tests: true
 ```
 
 ## Notes on Artifact Handling
@@ -293,7 +281,7 @@ secrets:
 - **Authentication Failures**: Verify username and password in secrets
 - **File Upload Failures**: Check remote-path permissions and ensure directory exists
 - **550 File/Directory Not Found**: The action will attempt to create missing directories automatically. If this fails, check FTP user permissions for directory creation
-- **Connectivity Test Failures**: Use custom `test-ftp-directory` and `test-ftp-file` parameters to test specific paths that match your server's directory structure
+- **Connectivity Test Failures**: The action uses built-in temporary file/directory testing. If tests fail, verify FTP user has read, write, and directory creation permissions on the target path
 - **Large File Issues**: FTP may have timeout issues with very large files
 
 ---
