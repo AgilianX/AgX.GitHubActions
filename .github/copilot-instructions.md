@@ -26,6 +26,12 @@ BEFORE DOING ANYTHING:
 
 ---
 
+## Issues
+
+- After implementing an existing issue, allow the user to validate the changes before creating a commit.
+
+---
+
 ## Documentation
 
 - Use emojis sparingly and only when appropriate.

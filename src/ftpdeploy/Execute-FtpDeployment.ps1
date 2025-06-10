@@ -358,35 +358,36 @@ function Write-FtpErrorDetails {
     Write-Host "`n🔧 Troubleshooting Suggestions:"
     if ($Context -like '*connectivity*' -or $Context -like '*connection*') {
         Write-Host '   📞 Connection Issues:'
-        Write-Host '     • Verify server hostname/IP address is correct'
-        Write-Host "     • Check if FTP port ($(if ($AdditionalInfo['Port']) { $AdditionalInfo['Port'] } else { '21' })) is open"
-        Write-Host "     • Confirm passive mode setting ($(if ($AdditionalInfo['Passive Mode']) { $AdditionalInfo['Passive Mode'] } else { 'Unknown' }))"
-        Write-Host '     • Test with FTP client (FileZilla, WinSCP) manually'
-        Write-Host '     • Check firewall rules on both client and server'
+        Write-Host '   • Verify server hostname/IP address is correct'
+        Write-Host "   • Check if FTP port ($(if ($AdditionalInfo['Port']) { $AdditionalInfo['Port'] } else { '21' })) is open"
+        Write-Host "   • Confirm passive mode setting ($(if ($AdditionalInfo['Passive Mode']) { $AdditionalInfo['Passive Mode'] } else { 'Unknown' }))"
+        Write-Host '   • Test with FTP client (FileZilla, WinSCP) manually'
+        Write-Host '   • Check firewall rules on both client and server'
     }
+
     if ($ErrorRecord.Exception.Message -like '*550*' -or ($ErrorRecord.Exception -is [System.Net.WebException] -and $ErrorRecord.Exception.Response -and $ErrorRecord.Exception.Response.StatusCode -eq [System.Net.FtpStatusCode]::ActionNotTakenFileUnavailable)) {
         Write-Host '   📁 File/Directory Access Issues (550):'
-        Write-Host "     • Verify the remote path exists: '$(if ($AdditionalInfo['Remote Path']) { $AdditionalInfo['Remote Path'] } elseif ($AdditionalInfo['Remote URI']) { $AdditionalInfo['Remote URI'] } else { 'Unknown' })'"
-        Write-Host '     • Check user permissions for the target directory'
-        Write-Host '     • Ensure parent directories exist'
-        Write-Host '     • Verify path syntax (forward slashes for FTP)'
-        Write-Host '     • Try connecting to parent directory first'
+        Write-Host "   • Verify the remote path exists: '$(if ($AdditionalInfo['Remote Path']) { $AdditionalInfo['Remote Path'] } elseif ($AdditionalInfo['Remote URI']) { $AdditionalInfo['Remote URI'] } else { 'Unknown' })'"
+        Write-Host '   • Check user permissions for the target directory'
+        Write-Host '   • Ensure parent directories exist'
+        Write-Host '   • Verify path syntax (forward slashes for FTP)'
+        Write-Host '   • Try connecting to parent directory first'
     }
 
     if ($Context -like '*upload*' -or $Context -like '*file*') {
         Write-Host '   📤 File Upload Issues:'
-        Write-Host '     • Check available disk space on server'
-        Write-Host "     • Verify file isn't locked or in use"
-        Write-Host "     • Confirm filename doesn't contain invalid characters"
-        Write-Host '     • Try uploading a smaller test file first'
+        Write-Host '   • Check available disk space on server'
+        Write-Host "   • Verify file isn't locked or in use"
+        Write-Host "   • Confirm filename doesn't contain invalid characters"
+        Write-Host '   • Try uploading a smaller test file first'
     }
 
     if ($ErrorRecord.Exception.Message -like '*authentication*' -or $ErrorRecord.Exception.Message -like '*530*') {
         Write-Host '   🔐 Authentication Issues:'
-        Write-Host '     • Verify username and password are correct'
-        Write-Host '     • Check if account is locked or expired'
-        Write-Host '     • Confirm user has FTP access permissions'
-        Write-Host '     • Test credentials with FTP client manually'
+        Write-Host '   • Verify username and password are correct'
+        Write-Host '   • Check if account is locked or expired'
+        Write-Host '   • Confirm user has FTP access permissions'
+        Write-Host '   • Test credentials with FTP client manually'
     }
 
     Write-Host '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
@@ -793,7 +794,7 @@ try {
                 }
             }
 
-            Write-Host ' • 🔍 Scanning remote server for all files (including subdirectories)...'
+            Write-Host '   • 🔍 Scanning remote server for all files (including subdirectories)...'
             $result = Read-FtpFilesRecursive -BaseUri $ftpUri -Path '' -Credentials $credentials -UsePassive $PassiveMode
             if (-not $result.Success) {
                 Write-FtpErrorDetails -ErrorSource $result.Exception -Context 'Listing remote files for cleanup' -AdditionalInfo @{
@@ -864,16 +865,16 @@ try {
                 }
 
                 if ($filesToDelete.Count -eq 0 -and $directoriesToDelete.Count -eq 0) {
-                    Write-Host ' • ✅ No old files or directories to cleanup'
+                    Write-Host '   • ✅ No old files or directories to cleanup'
                 }
             }
             else {
-                Write-Host ' • ⚠️ Could not retrieve remote server structure for cleanup'
+                Write-Host '   • ⚠️ Could not retrieve remote server structure for cleanup'
             }
         }
         catch {
             Write-Host "   • ⚠️  `e[33mCleanup failed:`e[0m $($_.Exception.Message)"
-            Write-Host ' • 📤 Deployment was successful, cleanup failed.'
+            Write-Host '   • 📤 Deployment was successful, cleanup failed.'
         }
     }
 
