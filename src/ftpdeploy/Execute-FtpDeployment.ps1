@@ -53,16 +53,41 @@ class Result {
     [System.Object]$Value
     [System.Exception]$Exception
 
-    Result([bool]$success, [System.Object]$value = $null, [System.Exception]$exception = $null) {
-        $this.Success = $success
-        $this.Value = $value
-        $this.Exception = $exception
-    }
-
-    Result([System.Exception]$exception) {
+    # Private constructor to prevent direct instantiation
+    hidden Result() {
         $this.Success = $false
         $this.Value = $null
-        $this.Exception = $exception
+        $this.Exception = $null
+    }
+
+    # Factory method for generic success
+    static [Result] Success() {
+        $result = [Result]::new()
+        $result.Success = $true
+        return $result
+    }
+
+    # Factory method for success with value
+    static [Result] Success([System.Object]$value) {
+        $result = [Result]::new()
+        $result.Success = $true
+        $result.Value = $value
+        return $result
+    }
+
+    # Factory method for generic failure
+    static [Result] Fail() {
+        $result = [Result]::new()
+        $result.Success = $false
+        return $result
+    }
+
+    # Factory method for failure with exception
+    static [Result] Fail([System.Exception]$exception) {
+        $result = [Result]::new()
+        $result.Success = $false
+        $result.Exception = $exception
+        return $result
     }
 }
 
@@ -110,15 +135,15 @@ function New-FtpRequest {
 function Test-FileMatchesPatterns {
     param([string]$FilePath, [string[]]$Patterns)
     if ($Patterns.Count -eq 0) {
-        return [Result]::new($false)
+        return [Result]::Fail()
     }
 
     foreach ($pattern in $Patterns) {
         if ($FilePath -like $pattern) {
-            return [Result]::new($true)
+            return [Result]::Success()
         }
     }
-    return [Result]::new($false)
+    return [Result]::Fail()
 }
 
 function Write-ExceptionDetails {
@@ -282,10 +307,12 @@ function Write-ExceptionDetails {
 function Write-FtpErrorDetails {
     param(
         [Parameter(Mandatory = $true)]
-        [System.Management.Automation.ErrorRecord]$ErrorRecord,
+        [object]$ErrorSource,
 
         [Parameter(Mandatory = $false)]
-        [string]$Context = '', [Parameter(Mandatory = $false)]
+        [string]$Context = '',
+
+        [Parameter(Mandatory = $false)]
         [hashtable]$AdditionalInfo = @{}
     )
 
@@ -296,19 +323,35 @@ function Write-FtpErrorDetails {
     if ($Context) {
         Write-Host "🔍 Context: `e[36m$Context`e[0m"
     }
-
     # Additional context information
     foreach ($key in $AdditionalInfo.Keys) {
         Write-Host "🔍 $key`: `e[36m$($AdditionalInfo[$key])`e[0m"
     }
 
+    # Determine if we have an ErrorRecord or Exception and extract the Exception
+    $exception = $null
+    $scriptStackTrace = $null
+
+    if ($ErrorSource -is [System.Management.Automation.ErrorRecord]) {
+        $exception = $ErrorSource.Exception
+        $scriptStackTrace = $ErrorSource.ScriptStackTrace
+    }
+    elseif ($ErrorSource -is [System.Exception]) {
+        $exception = $ErrorSource
+        $scriptStackTrace = $null
+    }
+    else {
+        Write-Host "⚠️ Unknown error source type: $($ErrorSource.GetType().FullName)"
+        return
+    }
+
     # Use the recursive exception details function
-    Write-ExceptionDetails -Exception $ErrorRecord.Exception -Level 0
+    Write-ExceptionDetails -Exception $exception -Level 0
 
     # ScriptStackTrace (PowerShell specific)
-    if ($ErrorRecord.ScriptStackTrace) {
+    if ($scriptStackTrace) {
         Write-Host "`n📝 Script Stack Trace:"
-        Write-Host "`e[90m$($ErrorRecord.ScriptStackTrace)`e[0m"
+        Write-Host "`e[90m$scriptStackTrace`e[0m"
     }
 
     # Provide troubleshooting suggestions based on context and error type
@@ -360,7 +403,6 @@ function Read-FtpPath {
     Write-Host "`n🔍 Read FTP Path: `e[36m$readPath`e[0m"
     try {
         $request = New-FtpRequest -Uri "$readPath" -Method ([System.Net.WebRequestMethods+Ftp]::ListDirectoryDetails) -Credentials $Credentials -UsePassive $UsePassive -TimeoutMs 10000
-
         $response = $request.GetResponse()
         $stream = $response.GetResponseStream()
         $reader = New-Object System.IO.StreamReader($stream)
@@ -369,17 +411,17 @@ function Read-FtpPath {
         $stream.Close()
 
         Write-Host " • ✅ `e[32mAccessible`e[0m - Contains $((($details -split "`n") | Where-Object { $_.Trim() }).Count) items"
-        return  [Result]::new($true, $details)
+        return [Result]::Success($details)
     }
     catch {
         Write-Host " • ❌ `e[31mNot accessible`e[0m - $($_.Exception.Message)"
-        Write-FtpErrorDetails -ErrorRecord $_ -Context "Read for '$readPath'" -AdditionalInfo @{
+        Write-FtpErrorDetails -ErrorSource $_ -Context "Read for '$readPath'" -AdditionalInfo @{
             'FTP URI'     = $readPath
             'Operation'   = 'Read path'
             'Credentials' = $Credentials.UserName
             'Use Passive' = $UsePassive
         }
-        return [Result]::new($_.Exception)
+        return [Result]::Fail($_.Exception)
     }
 }
 
@@ -445,7 +487,7 @@ function Read-FtpFilesRecursive {
         }
     }
 
-    return [Result]::new($true, @{Files = $files; Directories = $directories })
+    return [Result]::Success(@{Files = $files; Directories = $directories })
 }
 
 function New-FtpDirectory {
@@ -474,17 +516,17 @@ function New-FtpDirectory {
             catch {
                 # Directory might already exist, which is fine
                 if ($_.Exception.Message -like '*550*' -and $_.Exception.Message -like '*exists*') {
-                    return [Result]::new($true)
+                    return [Result]::Success()
                 }
                 else {
                     Write-Host " • ⚠️ Directory creation failed for `e[33m$createUri`e[0m"
-                    return [Result]::new($_.Exception)
+                    return [Result]::Fail($_.Exception)
                 }
             }
         }
     }
 
-    return [Result]::new($true)
+    return [Result]::Success()
 }
 
 function Remove-FtpDirectory {
@@ -499,15 +541,14 @@ function Remove-FtpDirectory {
 
     try {
         $request = New-FtpRequest -Uri $removeUri -Method ([System.Net.WebRequestMethods+Ftp]::RemoveDirectory) -Credentials $Credentials -UsePassive $UsePassive
-
         $response = $request.GetResponse()
         $response.Close()
         Write-Host " • ✅ Removed directory: `e[32m$removeUri`e[0m"
-        return [Result]::new($true)
+        return [Result]::Success()
     }
     catch {
         Write-Host " • ⚠️ Directory removal failed for `e[33m$removeUri`e[0m"
-        return [Result]::new($_.Exception)
+        return [Result]::Fail($_.Exception)
     }
 }
 
@@ -545,11 +586,11 @@ function Upload-FtpFile {
         $response = $request.GetResponse()
         $response.Close()
         Write-Host " • ✅ Uploaded file: `e[32m$uploadUri`e[0m"
-        return [Result]::new($true)
+        return [Result]::Success()
     }
     catch {
         Write-Host " • ⚠️ File upload failed for `e[33m$uploadUri`e[0m"
-        return [Result]::new($_.Exception)
+        return [Result]::Fail($_.Exception)
     }
 }
 
@@ -565,16 +606,15 @@ function Remove-FtpFile {
 
     try {
         $request = New-FtpRequest -Uri $removeUri -Method ([System.Net.WebRequestMethods+Ftp]::DeleteFile) -Credentials $Credentials -UsePassive $UsePassive
-
         $response = $request.GetResponse()
         $response.Close()
 
         Write-Host " • ✅ Removed file: `e[32m$removeUri`e[0m"
-        return [Result]::new($true)
+        return [Result]::Success()
     }
     catch {
         Write-Host " • ⚠️ File removal failed for `e[33m$removeUri`e[0m"
-        return [Result]::new($_.Exception)
+        return [Result]::Fail($_.Exception)
     }
 }
 
@@ -600,7 +640,7 @@ function Test-FtpConnectivity {
         Write-Host " • Testing basic connection to `e[36m$FtpUri`e[0m"
         $result = Read-FtpPath -BaseUri $baseUri -PathToRead $pathPart -Credentials $Credentials -UsePassive $UsePassive
         if (-not $result.Success) {
-            Write-FtpErrorDetails -ErrorRecord $result.Exception -Context '[TEST] FTP connectivity and read' -AdditionalInfo @{
+            Write-FtpErrorDetails -ErrorSource $result.Exception -Context '[TEST] FTP connectivity and read' -AdditionalInfo @{
                 'Remote Path' = $FtpUri
             }
             return $result
@@ -609,7 +649,7 @@ function Test-FtpConnectivity {
         $tempDir = "$pathPart/agx-ftp-test-temp"
         $createDirResult = New-FtpDirectory -BaseUri $baseUri -DirectoryUri $tempDir -Credentials $Credentials -UsePassive $UsePassive
         if (-not $createDirResult.Success) {
-            Write-FtpErrorDetails -ErrorRecord $createDirResult.Exception -Context '[TEST] Creating temp directory' -AdditionalInfo @{
+            Write-FtpErrorDetails -ErrorSource $createDirResult.Exception -Context '[TEST] Creating temp directory' -AdditionalInfo @{
                 'Remote Path' = $tempDir
             }
             return $createDirResult
@@ -617,7 +657,7 @@ function Test-FtpConnectivity {
 
         $deleteDirResult = Remove-FtpDirectory -BaseUri $baseUri -DirectoryUri $tempDir -Credentials $Credentials -UsePassive $UsePassive
         if (-not $deleteDirResult.Success) {
-            Write-FtpErrorDetails -ErrorRecord $deleteDirResult.Exception -Context '[TEST] Deleting temp directory' -AdditionalInfo @{
+            Write-FtpErrorDetails -ErrorSource $deleteDirResult.Exception -Context '[TEST] Deleting temp directory' -AdditionalInfo @{
                 'Remote Path' = $tempDir
             }
             return $deleteDirResult
@@ -629,7 +669,7 @@ function Test-FtpConnectivity {
 
         $createFileResult = Upload-FtpFile -BaseUri $baseUri -FileUri "$tempFile" -FileContent $contentBytes -Credentials $Credentials -UsePassive $UsePassive
         if (-not $createFileResult.Success) {
-            Write-FtpErrorDetails -ErrorRecord $createFileResult.Exception -Context '[TEST] Creating temp file' -AdditionalInfo @{
+            Write-FtpErrorDetails -ErrorSource $createFileResult.Exception -Context '[TEST] Creating temp file' -AdditionalInfo @{
                 'Remote Path' = "$tempFile"
             }
             return $createFileResult
@@ -637,7 +677,7 @@ function Test-FtpConnectivity {
 
         $deleteFileResult = Remove-FtpFile -BaseUri $baseUri -FileUri $tempFile -Credentials $Credentials -UsePassive $UsePassive
         if (-not $deleteFileResult.Success) {
-            Write-FtpErrorDetails -ErrorRecord $deleteFileResult.Exception -Context '[TEST] Deleting temp file' -AdditionalInfo @{
+            Write-FtpErrorDetails -ErrorSource $deleteFileResult.Exception -Context '[TEST] Deleting temp file' -AdditionalInfo @{
                 'Remote Path' = "$tempFile"
             }
             return $deleteFileResult
@@ -645,11 +685,11 @@ function Test-FtpConnectivity {
     }
     catch {
         Write-Host " ❌ `e[31mFTP connectivity test failed: $($_.Exception.Message)`e[0m"
-        Write-FtpErrorDetails -ErrorRecord $_ -Context 'FTP connectivity test'
-        return [Result]::new($_.Exception)
+        Write-FtpErrorDetails -ErrorSource $_ -Context 'FTP connectivity test'
+        return [Result]::Fail($_.Exception)
     }
 
-    return [Result]::new($true)
+    return [Result]::Success()
 }
 
 # MAIN SCRIPT EXECUTION
@@ -716,11 +756,10 @@ try {
             $skippedCount++
             return
         }
-        Write-Host "   • Uploading file: `e[36m$relativePath`e[0m"
 
         $uploadResult = Upload-FtpFile -BaseUri $ftpUri -FileUri $relativePath -FileContent ([System.IO.File]::ReadAllBytes($currentFile.FullName)) -Credentials $credentials -UsePassive $PassiveMode
         if (-not $uploadResult.Success) {
-            Write-FtpErrorDetails -ErrorRecord $uploadResult.Exception -Context 'File upload' -AdditionalInfo @{
+            Write-FtpErrorDetails -ErrorSource $uploadResult.Exception -Context 'File upload' -AdditionalInfo @{
                 'File'       = $currentFile.Name
                 'Local path' = $currentFile.FullName
                 'Remote URI' = New-FtpUri -BaseUri $ftpUri -Path $relativePath
@@ -755,7 +794,7 @@ try {
             Write-Host ' • 🔍 Scanning remote server for all files (including subdirectories)...'
             $result = Read-FtpFilesRecursive -BaseUri $ftpUri -Path '' -Credentials $credentials -UsePassive $PassiveMode
             if (-not $result.Success) {
-                Write-FtpErrorDetails -ErrorRecord $result.Exception -Context 'Listing remote files for cleanup' -AdditionalInfo @{
+                Write-FtpErrorDetails -ErrorSource $result.Exception -Context 'Listing remote files for cleanup' -AdditionalInfo @{
                     'FTP URI' = $ftpUri
                 }
                 throw "Failed to list remote files: $($result.Exception.Message)"
@@ -785,7 +824,7 @@ try {
                 foreach ($fileToDelete in $filesToDelete) {
                     $deleteResult = Remove-FtpFile -BaseUri $ftpUri -FileUri $fileToDelete -Credentials $credentials -UsePassive $PassiveMode
                     if (-not $deleteResult.Success) {
-                        Write-FtpErrorDetails -ErrorRecord $deleteResult.Exception -Context 'File deletion' -AdditionalInfo @{
+                        Write-FtpErrorDetails -ErrorSource $deleteResult.Exception -Context 'File deletion' -AdditionalInfo @{
                             'File path' = $filesToDelete
                         }
                         throw "Failed to delete file: $fileToDelete"
@@ -814,7 +853,7 @@ try {
                 foreach ($dirToDelete in $directoriesToDelete) {
                     $deleteResult = Remove-FtpDirectory -BaseUri $ftpUri -DirectoryUri $dirToDelete -Credentials $credentials -UsePassive $PassiveMode
                     if (-not $deleteResult.Success) {
-                        Write-FtpErrorDetails -ErrorRecord $deleteResult.Exception -Context 'Directory deletion' -AdditionalInfo @{
+                        Write-FtpErrorDetails -ErrorSource $deleteResult.Exception -Context 'Directory deletion' -AdditionalInfo @{
                             'Directory path' = $dirToDelete
                         }
                         throw "Failed to delete directory: $dirToDelete"
@@ -847,7 +886,7 @@ try {
 }
 catch {
     Write-Host "❌ `e[31mFTP deployment failed!`e[0m"
-    Write-FtpErrorDetails -ErrorRecord $_ -Context 'FTP deployment process' -AdditionalInfo @{
+    Write-FtpErrorDetails -ErrorSource $_ -Context 'FTP deployment process' -AdditionalInfo @{
         'Deploy Path'  = $DeployPath
         'Server'       = $Server
         'Port'         = $Port
